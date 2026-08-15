@@ -45,3 +45,24 @@ def fetch_chunks(client, chapter_ids: list[str], chunk_types: list[str]) -> list
         .execute()
     )
     return resp.data
+
+
+def _parse_embedding(value) -> list[float]:
+    """PostgREST serializes pgvector columns as their text form, e.g. "[0.1,0.2]"."""
+    if isinstance(value, list):
+        return [float(x) for x in value]
+    return [float(x) for x in value.strip("[]").split(",")]
+
+
+def fetch_chunks_with_embeddings(client, chapter_ids: list[str]) -> list[dict]:
+    """Every chunk (any chunk_type) for the given chapters, embedding included -- for similarity search."""
+    resp = (
+        client.table(TABLE)
+        .select("chapter_id,chunk_type,content,metadata,embedding")
+        .in_("chapter_id", chapter_ids)
+        .execute()
+    )
+    rows = resp.data
+    for row in rows:
+        row["embedding"] = _parse_embedding(row["embedding"])
+    return rows
