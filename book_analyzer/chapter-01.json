@@ -1,0 +1,265 @@
+{
+  "chapter_title": "Unit 1: Our Favourites",
+  "vocabulary": [
+    {
+      "word": "actor",
+      "definition": "",
+      "example_sentences": [
+        "That's a photo of Saoirse Ronan. She's an Irish actor.",
+        "Finn Wolfhard is an actor."
+      ],
+      "page": null
+    },
+    {
+      "word": "band",
+      "definition": "",
+      "example_sentences": [
+        "BTS are a boy band from South Korea. My favourite member of the band is Jimin."
+      ],
+      "page": null
+    },
+    {
+      "word": "book",
+      "definition": "",
+      "example_sentences": [
+        "Her book Starfish is one of my favourites.",
+        "The Hobbit -> book, film"
+      ],
+      "page": null
+    },
+    {
+      "word": "film",
+      "definition": "",
+      "example_sentences": [
+        "She's in the film Little Women.",
+        "The Hobbit -> book, film"
+      ],
+      "page": null
+    },
+    {
+      "word": "player",
+      "definition": "",
+      "example_sentences": [
+        "My favourite Arsenal player is Bukayo Saka."
+      ],
+      "page": null
+    },
+    {
+      "word": "singer",
+      "definition": "",
+      "example_sentences": [
+        "He's a great singer.",
+        "Drake is my favourite singer."
+      ],
+      "page": null
+    },
+    {
+      "word": "team",
+      "definition": "",
+      "example_sentences": [
+        "I'm from London and my favourite football team is Arsenal."
+      ],
+      "page": null
+    },
+    {
+      "word": "writer",
+      "definition": "",
+      "example_sentences": [
+        "Akemi Dawn Bowman is an American writer.",
+        "JK Rowling is my favourite writer."
+      ],
+      "page": null
+    },
+    {
+      "word": "American",
+      "definition": "",
+      "example_sentences": [
+        "Our home is in Washington, DC, but we aren't American.",
+        "Sam isn't American. She's Canadian / British.",
+        "Ichika is a young American / Japanese girl.",
+        "You're right! She's American."
+      ],
+      "page": null
+    },
+    {
+      "word": "Australian",
+      "definition": "",
+      "example_sentences": [
+        "Carter and Lily are Hungarian / Australian."
+      ],
+      "page": null
+    },
+    {
+      "word": "Brazilian",
+      "definition": "",
+      "example_sentences": [
+        "He isn't Brazilian.",
+        "Daniel is a young Mexican / Brazilian boy."
+      ],
+      "page": null
+    },
+    {
+      "word": "British",
+      "definition": "",
+      "example_sentences": [
+        "I'm not British.",
+        "Sam isn't American. She's Canadian / British.",
+        "She's British."
+      ],
+      "page": null
+    },
+    {
+      "word": "Canadian",
+      "definition": "",
+      "example_sentences": [
+        "Sam isn't American. She's Canadian / British.",
+        "Factfile - Finn Wolfhard: actor (yes), American (no), Canadian (yes)"
+      ],
+      "page": null
+    },
+    {
+      "word": "Hungarian",
+      "definition": "",
+      "example_sentences": [
+        "Carter and Lily are Hungarian / Australian."
+      ],
+      "page": null
+    },
+    {
+      "word": "Irish",
+      "definition": "",
+      "example_sentences": [
+        "She's an Irish actor."
+      ],
+      "page": null
+    },
+    {
+      "word": "Japanese",
+      "definition": "",
+      "example_sentences": [
+        "Ichika is a young American / Japanese girl."
+      ],
+      "page": null
+    },
+    {
+      "word": "Mexican",
+      "definition": "",
+      "example_sentences": [
+        "Fatima and Ahmed are Moroccan / Mexican.",
+        "Daniel is a young Mexican / Brazilian boy."
+      ],
+      "page": null
+    },
+    {
+      "word": "Moroccan",
+      "definition": "",
+      "example_sentences": [
+        "Fatima and Ahmed are Moroccan / Mexican."
+      ],
+      "page": null
+    },
+    {
+      "word": "Turkish",
+      "definition": "",
+      "example_sentences": [
+        "Kemal is Ukrainian / Turkish."
+      ],
+      "page": null
+    },
+    {
+      "word": "Ukrainian",
+      "definition": "",
+      "example_sentences": [
+        "Kemal is Ukrainian / Turkish."
+      ],
+      "page": null
+    },
+    {
+      "word": "capital city",
+      "definition": "",
+      "example_sentences": [
+        "What's your country's capital city?",
+        "Dublin are / is the capital city of Ireland."
+      ],
+      "page": null
+    },
+    {
+      "word": "home town",
+      "definition": "",
+      "example_sentences": [
+        "What's your home town or city?"
+      ],
+      "page": null
+    }
+  ],
+  "grammar_points": [
+    {
+      "topic": "Verb 'be' (affirmative and negative)",
+      "explanation": "Affirmative: I'm from Kamakura. / He's from Acapulco. / It's an old city. / We're from Australia. Negative: I'm not British. / He isn't Brazilian. / It isn't famous. / We aren't American.",
+      "example_sentences": [
+        "I'm from Kamakura.",
+        "He's from Acapulco.",
+        "It's an old city.",
+        "We're from Australia.",
+        "I'm not British.",
+        "He isn't Brazilian.",
+        "It isn't famous.",
+        "We aren't American.",
+        "Selena Gomez is / are from the USA.",
+        "I'm / 're in English class right now.",
+        "Dublin are / is the capital city of Ireland.",
+        "You and your friends is / are students.",
+        "We're / 'm from a big city. What about you?",
+        "Chris Hemsworth is / are a famous actor.",
+        "You aren't from the USA.",
+        "Toronto ___ a small town.",
+        "I ___ from Australia or the UK.",
+        "Carter and Lily ___ from Morocco.",
+        "Ichika ___ American. She's from Japan.",
+        "Leo Messi ___ a singer or an actor.",
+        "Finn Wolfhard is an actor. He isn't American."
+      ],
+      "page": null
+    },
+    {
+      "topic": "Nationality adjective formation",
+      "explanation": "Most nationalities end with -an, -ish, or -ese. Other nationalities have irregular endings: France -> French, Switzerland -> Swiss, Czech Republic -> Czech.",
+      "example_sentences": [
+        "Sam isn't American. She's Canadian / British.",
+        "Fatima and Ahmed are Moroccan / Mexican.",
+        "Ichika is a young American / Japanese girl.",
+        "Carter and Lily are Hungarian / Australian.",
+        "Daniel is a young Mexican / Brazilian boy.",
+        "Kemal is Ukrainian / Turkish."
+      ],
+      "page": null
+    }
+  ],
+  "reading_text": [
+    {
+      "title": "Match the photos 1-4 with the messages A-D.",
+      "full_text": "A: That's a photo of Saoirse Ronan. She's an Irish actor. She's in the film Little Women. I think she's great!\nB: I'm from London and my favourite football team is Arsenal. My favourite Arsenal player is Bukayo Saka.\nC: Akemi Dawn Bowman is an American writer. Her book Starfish is one of my favourites. I love it!\nD: BTS are a boy band from South Korea. My favourite member of the band is Jimin. He's a great singer.",
+      "page": null
+    },
+    {
+      "title": "Forum: \"Where are you from?\"",
+      "full_text": "Sam: I'm from Kersey. It's a small town in the UK. It's a nice place to live.\nFatima and Ahmed: We're from Meknes. It's a big city in Morocco, but it isn't the capital. That's Rabat.\nIchika: I'm from Kamakura. It's a town in Japan. It isn't famous, but it's very pretty.\nCarter and Lily: Our home is in Washington, DC, but we aren't American. We're from Australia.\nDaniel: I'm from Acapulco, in Mexico. My city is famous for its beaches. They're beautiful!\nKemal: I'm from Izmir. It's an old city in Turkey. Izmir's a very interesting place for tourists.",
+      "page": null
+    },
+    {
+      "title": "Factfiles (Exercise 8)",
+      "full_text": "Factfile - Finn Wolfhard: actor (yes), American (no), Canadian (yes)\nFactfile - Chloe and Halle Bailey: singers (yes), British (no), American (yes)\nFactfile - Veronica Roth: writer (yes), British (no), American (yes)\nFactfile - (unnamed): singer (no), football player (yes), British (yes)",
+      "page": null
+    }
+  ],
+  "exercises_covered": [
+    "Matching (photos to messages; words to examples; nationalities to countries)",
+    "Multiple-choice / choose the correct option (favourite people/things, nationalities, correct form of 'be')",
+    "Fill-in-the-blank / gap-fill (negative form of 'be')",
+    "Table completion (nationalities table; 'be' affirmative/negative table)",
+    "Video/listening comprehension (watch and watch again tasks)",
+    "Reading comprehension (forum messages, factfiles)",
+    "Speaking / pair or group discussion",
+    "Writing (Project Builder: choosing categories and describing people for a collage)"
+  ]
+}

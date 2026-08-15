@@ -1,0 +1,60 @@
+{
+  "class_or_week_label": "Week 1",
+  "questions": [
+    {
+      "id": "w1q1",
+      "type": "multiple_choice",
+      "topic": "vocabulary",
+      "source_chapter_id": "01-greetings",
+      "prompt": "What does 'hello' mean?",
+      "choices": ["A greeting", "A farewell", "A question", "A name"]
+    },
+    {
+      "id": "w1q2",
+      "type": "fill_in_blank",
+      "topic": "grammar",
+      "source_chapter_id": "01-greetings",
+      "prompt": "I ___ Tom.",
+      "choices": []
+    },
+    {
+      "id": "w1q3",
+      "type": "short_answer",
+      "topic": "grammar",
+      "source_chapter_id": "01-greetings",
+      "prompt": "Complete: You ___ from Canada.",
+      "choices": []
+    },
+    {
+      "id": "w1q4",
+      "type": "multiple_choice",
+      "topic": "vocabulary",
+      "source_chapter_id": "01-greetings",
+      "prompt": "What does 'nice to meet you' mean?",
+      "choices": [
+        "A polite greeting on first meeting",
+        "A farewell",
+        "An apology",
+        "A question about health"
+      ]
+    }
+  ],
+  "results": [
+    { "student": "Ana", "question_id": "w1q1", "correct": true },
+    { "student": "Ana", "question_id": "w1q2", "correct": true },
+    { "student": "Ana", "question_id": "w1q3", "correct": true },
+    { "student": "Ana", "question_id": "w1q4", "correct": true },
+
+    { "student": "Tomas", "question_id": "w1q1", "correct": false },
+    { "student": "Tomas", "question_id": "w1q2", "correct": true },
+    { "student": "Tomas", "question_id": "w1q3", "correct": true },
+    { "student": "Tomas", "question_id": "w1q4", "correct": false },
+
+    { "student": "Elif", "question_id": "w1q1", "correct": true },
+    { "student": "Elif", "question_id": "w1q2", "correct": false },
+    { "student": "Elif", "question_id": "w1q3", "correct": false },
+    { "student": "Elif", "question_id": "w1q4", "correct": true },
+
+    { "student": "Yuki", "question_id": "w1q2", "correct": false }
+  ]
+}

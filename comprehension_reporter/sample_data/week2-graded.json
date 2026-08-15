@@ -1,0 +1,53 @@
+{
+  "class_or_week_label": "Week 2",
+  "questions": [
+    {
+      "id": "w2q1",
+      "type": "multiple_choice",
+      "topic": "vocabulary",
+      "source_chapter_id": "01-greetings",
+      "prompt": "What does 'name' mean?",
+      "choices": ["What a person is called", "A greeting", "A place", "A number"]
+    },
+    {
+      "id": "w2q2",
+      "type": "fill_in_blank",
+      "topic": "grammar",
+      "source_chapter_id": "01-greetings",
+      "prompt": "She ___ from Spain.",
+      "choices": []
+    },
+    {
+      "id": "w2q3",
+      "type": "short_answer",
+      "topic": "grammar",
+      "source_chapter_id": "01-greetings",
+      "prompt": "Complete: They ___ from Japan.",
+      "choices": []
+    },
+    {
+      "id": "w2q4",
+      "type": "multiple_choice",
+      "topic": "vocabulary",
+      "source_chapter_id": "01-greetings",
+      "prompt": "What does 'from' indicate?",
+      "choices": ["Origin or source", "Destination", "Time", "Quantity"]
+    }
+  ],
+  "results": [
+    { "student": "Ana", "question_id": "w2q1", "correct": true },
+    { "student": "Ana", "question_id": "w2q2", "correct": true },
+    { "student": "Ana", "question_id": "w2q3", "correct": true },
+    { "student": "Ana", "question_id": "w2q4", "correct": true },
+
+    { "student": "Tomas", "question_id": "w2q1", "correct": true },
+    { "student": "Tomas", "question_id": "w2q2", "correct": true },
+    { "student": "Tomas", "question_id": "w2q3", "correct": true },
+    { "student": "Tomas", "question_id": "w2q4", "correct": true },
+
+    { "student": "Elif", "question_id": "w2q1", "correct": true },
+    { "student": "Elif", "question_id": "w2q2", "correct": false },
+    { "student": "Elif", "question_id": "w2q3", "correct": false },
+    { "student": "Elif", "question_id": "w2q4", "correct": true }
+  ]
+}

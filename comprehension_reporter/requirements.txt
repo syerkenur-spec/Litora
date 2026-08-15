@@ -1,0 +1,3 @@
+# No third-party dependencies. This agent is a pure aggregation over
+# already-graded, already-labeled JSON (see README.md) -- it doesn't need
+# the Anthropic API the way book-analyzer and test-generator do.

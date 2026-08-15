@@ -1,0 +1,53 @@
+{
+  "chapters": [
+    {
+      "chapter_title": "Unit 1: Our Favourites",
+      "vocabulary": [
+        { "term": "actor", "definition": "A person who performs in films or TV shows.", "part_of_speech": "noun" },
+        { "term": "band", "definition": "A group of musicians who play or sing together.", "part_of_speech": "noun" },
+        { "term": "book", "definition": "A written work, such as a novel.", "part_of_speech": "noun" },
+        { "term": "film", "definition": "A movie.", "part_of_speech": "noun" },
+        { "term": "player", "definition": "A person who plays a sport, such as football.", "part_of_speech": "noun" },
+        { "term": "singer", "definition": "A person who sings, especially professionally.", "part_of_speech": "noun" },
+        { "term": "team", "definition": "A group of players who play a sport together.", "part_of_speech": "noun" },
+        { "term": "writer", "definition": "A person who writes books.", "part_of_speech": "noun" },
+        { "term": "favourite", "definition": "Liked more than any other of the same kind.", "part_of_speech": "adjective" },
+        { "term": "capital city", "definition": "The city where a country's government is based.", "part_of_speech": "noun phrase" },
+        { "term": "home town", "definition": "The town or city where a person was born or grew up.", "part_of_speech": "noun phrase" },
+        { "term": "American", "definition": "Relating to or a person from the USA.", "part_of_speech": "adjective/noun" },
+        { "term": "Australian", "definition": "Relating to or a person from Australia.", "part_of_speech": "adjective/noun" },
+        { "term": "Brazilian", "definition": "Relating to or a person from Brazil.", "part_of_speech": "adjective/noun" },
+        { "term": "British", "definition": "Relating to or a person from the UK.", "part_of_speech": "adjective/noun" },
+        { "term": "Canadian", "definition": "Relating to or a person from Canada.", "part_of_speech": "adjective/noun" },
+        { "term": "Hungarian", "definition": "Relating to or a person from Hungary.", "part_of_speech": "adjective/noun" },
+        { "term": "Irish", "definition": "Relating to or a person from Ireland.", "part_of_speech": "adjective/noun" },
+        { "term": "Japanese", "definition": "Relating to or a person from Japan.", "part_of_speech": "adjective/noun" },
+        { "term": "Mexican", "definition": "Relating to or a person from Mexico.", "part_of_speech": "adjective/noun" },
+        { "term": "Moroccan", "definition": "Relating to or a person from Morocco.", "part_of_speech": "adjective/noun" },
+        { "term": "Turkish", "definition": "Relating to or a person from Turkey.", "part_of_speech": "adjective/noun" },
+        { "term": "Ukrainian", "definition": "Relating to or a person from Ukraine.", "part_of_speech": "adjective/noun" }
+      ],
+      "grammar_points": [
+        {
+          "name": "Verb 'be' - affirmative",
+          "explanation": "Affirmative contracted forms of 'be' used to state facts about people and places: I'm, He's/She's/It's, We're/You're/They're (e.g. 'I'm from Kamakura.', 'It's an old city.', 'We're from Australia.')."
+        },
+        {
+          "name": "Verb 'be' - negative",
+          "explanation": "Negative contracted forms of 'be': I'm not, He isn't/She isn't/It isn't, We aren't/You aren't/They aren't (e.g. 'I'm not British.', 'It isn't famous.', 'We aren't American.')."
+        },
+        {
+          "name": "Nationality adjective formation",
+          "explanation": "Most nationality adjectives are formed by adding -an, -ish, or -ese to (a form of) the country name (e.g. Canada -> Canadian, Turkey -> Turkish, Japan -> Japanese). Some are irregular (e.g. France -> French, Switzerland -> Swiss, Czech Republic -> Czech)."
+        }
+      ],
+      "difficulty": {
+        "cefr": "A1",
+        "confidence": "high"
+      },
+      "unclear": false,
+      "unclear_reason": "",
+      "chapter_id": "chapter1_our_favourites"
+    }
+  ]
+}

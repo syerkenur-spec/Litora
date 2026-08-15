@@ -1,0 +1,4 @@
+# No third-party dependencies of its own. This script shells out to
+# book_analyzer, test_generator, and comprehension_reporter as subprocesses,
+# so their dependencies (see each directory's requirements.txt) must be
+# installed too.
