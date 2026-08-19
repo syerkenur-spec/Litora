@@ -12,8 +12,10 @@ guessed at.
 pip install -r requirements.txt
 ```
 
-Requires an Anthropic API key: set `ANTHROPIC_API_KEY`, or run `ant auth login`
-if you have the Anthropic CLI installed.
+Requires a Gemini API key (free tier available at
+[aistudio.google.com/apikey](https://aistudio.google.com/apikey)): set
+`GEMINI_API_KEY`, or put it in a `.env` file at the repo root (see
+`../.env.example`).
 
 ## Usage
 

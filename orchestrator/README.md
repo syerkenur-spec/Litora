@@ -48,8 +48,8 @@ pip install -r ../book_analyzer/requirements.txt
 pip install -r ../test_generator/requirements.txt
 ```
 
-(`comprehension_reporter` has no dependencies.) Requires `ANTHROPIC_API_KEY`
-for the book_analyzer/test_generator stages.
+(`comprehension_reporter` has no dependencies.) Requires `GEMINI_API_KEY`
+(see `../.env.example`) for the book_analyzer/test_generator stages.
 
 ## Usage
 

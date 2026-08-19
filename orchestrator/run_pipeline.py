@@ -31,8 +31,9 @@ Usage:
         --class-label "Grade 7A" \\
         --work-dir pipeline_out
 
-Requires ANTHROPIC_API_KEY in the environment for stages 1-2 (book_analyzer
-and test_generator call Claude); stage 3 (comprehension_reporter) does not.
+Requires GEMINI_API_KEY in the environment (or a .env file at the repo root)
+for stages 1-2 (book_analyzer and test_generator call Gemini); stage 3
+(comprehension_reporter) does not.
 """
 
 import argparse

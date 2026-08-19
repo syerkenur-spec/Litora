@@ -2,7 +2,7 @@
 """
 book-analyzer agent (see ../book-analyzer.md for the spec this implements).
 
-Reads a coursebook one chapter-file at a time, asks Claude to extract
+Reads a coursebook one chapter-file at a time, asks Gemini to extract
 vocabulary, grammar points, and a CEFR difficulty estimate per chapter, and
 writes the results as one consistently-shaped book-structure.json plus a
 one-line log of any chapters flagged as unclear.
@@ -14,17 +14,28 @@ Usage:
 processed in filename-sorted order, so name them so that order matches the
 book (e.g. 01-intro.md, 02-greetings.md, ...).
 
-Requires ANTHROPIC_API_KEY in the environment (or an `ant auth login` profile).
+Requires GEMINI_API_KEY (or GOOGLE_API_KEY) in the environment, or in a .env
+file anywhere above the current directory.
 """
 
 import argparse
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
-import anthropic
+from dotenv import load_dotenv
+from google import genai
+from google.genai import errors
+from google.genai import types
 
-MODEL = "claude-opus-5"
+load_dotenv()
+
+RETRY_ATTEMPTS = 5
+RETRY_BASE_DELAY = 5  # seconds; doubles each attempt
+
+MODEL = "gemini-flash-lite-latest"
 
 SYSTEM_PROMPT = """You break down a single chapter of a language coursebook into structured data the rest of a coursebook app can use.
 
@@ -90,18 +101,48 @@ CHAPTER_SCHEMA = {
 }
 
 
-def analyze_chapter(client: anthropic.Anthropic, chapter_id: str, text: str) -> dict:
-    response = client.messages.create(
+def _gemini_schema(schema):
+    """Drop keys Gemini's OpenAPI-subset response_schema doesn't support (e.g. additionalProperties)."""
+    if isinstance(schema, dict):
+        return {k: _gemini_schema(v) for k, v in schema.items() if k != "additionalProperties"}
+    if isinstance(schema, list):
+        return [_gemini_schema(v) for v in schema]
+    return schema
+
+
+def _client() -> genai.Client:
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise SystemExit("error: set GEMINI_API_KEY (or GOOGLE_API_KEY) in the environment or a .env file")
+    return genai.Client(api_key=api_key)
+
+
+def _generate_with_retry(client: genai.Client, **kwargs):
+    delay = RETRY_BASE_DELAY
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return client.models.generate_content(**kwargs)
+        except errors.ServerError:
+            if attempt == RETRY_ATTEMPTS:
+                raise
+            print(f"  Gemini overloaded, retrying in {delay}s (attempt {attempt}/{RETRY_ATTEMPTS})...", file=sys.stderr)
+            time.sleep(delay)
+            delay *= 2
+
+
+def analyze_chapter(client: genai.Client, chapter_id: str, text: str) -> dict:
+    response = _generate_with_retry(
+        client,
         model=MODEL,
-        max_tokens=8000,
-        system=SYSTEM_PROMPT,
-        output_config={"format": {"type": "json_schema", "schema": CHAPTER_SCHEMA}},
-        messages=[
-            {"role": "user", "content": f"Chapter file: {chapter_id}\n\n{text}"}
-        ],
+        contents=f"Chapter file: {chapter_id}\n\n{text}",
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=_gemini_schema(CHAPTER_SCHEMA),
+            max_output_tokens=8000,
+        ),
     )
-    text_block = next(b for b in response.content if b.type == "text")
-    result = json.loads(text_block.text)
+    result = json.loads(response.text)
     result["chapter_id"] = chapter_id
     return result
 
@@ -124,7 +165,7 @@ def main() -> int:
         print(f"error: no .txt/.md files found in {args.input_dir}", file=sys.stderr)
         return 1
 
-    client = anthropic.Anthropic()
+    client = _client()
     chapters = []
     flagged = []
 

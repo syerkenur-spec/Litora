@@ -45,7 +45,10 @@ def load_graded_test(path: Path) -> tuple[dict, list]:
 
 
 def topic_key(question: dict) -> str:
-    return f"{question['source_chapter_id']}::{question['topic']}"
+    # specific_topic (e.g. "Possessive 's") gives a finer trend than the bare
+    # vocabulary/grammar category; older test files without it fall back to topic.
+    topic = question.get("specific_topic") or question["topic"]
+    return f"{question['source_chapter_id']}::{topic}"
 
 
 def aggregate(graded_files: list[Path]) -> dict[str, dict[str, list[int]]]:
