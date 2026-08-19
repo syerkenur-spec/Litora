@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 
 import fitz  # pymupdf
@@ -223,7 +224,16 @@ def extract_page_texts(
         return native_pages, False
 
     if _cloud_vision_api_key():
+        print(
+            f"[ocr] GOOGLE_CLOUD_VISION_API_KEY found -- using Cloud Vision for {doc.page_count} page(s).",
+            file=sys.stderr,
+        )
         return _cloud_ocr_pages(doc, target_language, progress), True
+    print(
+        f"[ocr] No GOOGLE_CLOUD_VISION_API_KEY found in environment -- falling back to local easyocr "
+        f"for {doc.page_count} page(s). Set that secret in the Space's Settings to speed this up.",
+        file=sys.stderr,
+    )
     return _local_ocr_pages(doc, target_language, progress), True
 
 
@@ -238,36 +248,62 @@ def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) 
     English-baseline reader, since at upload time the language isn't known yet."""
     doc = fitz.open(pdf_path)
     if doc.page_count == 0:
+        print("[lang-detect] PDF has 0 pages -- no sample text available.", file=sys.stderr)
         return ""
     sample_pages = min(2, doc.page_count)
     text = "\n".join(doc[i].get_text() for i in range(sample_pages))
     if len(text.strip()) >= NATIVE_TEXT_THRESHOLD * sample_pages:
+        print(
+            f"[lang-detect] Using native text from the first {sample_pages} page(s): {len(text.strip())} char(s).",
+            file=sys.stderr,
+        )
         return text
 
     langs = _ocr_langs_for(hint_language) if hint_language else ("en",)
+    print(
+        f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling page 1 "
+        f"with reader langs={langs} (hint_language={hint_language!r}).",
+        file=sys.stderr,
+    )
     reader = _get_ocr_reader(langs)
     pix = doc[0].get_pixmap(dpi=OCR_DPI)
     result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
-    return "\n".join(r[1] for r in result)
+    text = "\n".join(r[1] for r in result)
+    print(f"[lang-detect] OCR sample produced {len(text.strip())} char(s).", file=sys.stderr)
+    return text
 
 
 def detect_language(pdf_path: str, hint_language: str | None = None) -> tuple[str | None, float]:
     """Best-effort (display_name, confidence) guess of a book's language from a quick
     sample. Returns (None, 0.0) if there's too little text or langdetect can't decide --
     callers must treat that as "unknown", never guess further."""
+    print(f"[lang-detect] Starting detection for {pdf_path!r} (hint_language={hint_language!r}).", file=sys.stderr)
     text = _sample_text_for_detection(pdf_path, hint_language)
     if len(text.strip()) < LANGDETECT_MIN_CHARS:
+        print(
+            f"[lang-detect] Only {len(text.strip())} char(s) of sample text (< {LANGDETECT_MIN_CHARS} "
+            "minimum) -- giving up, returning (None, 0.0).",
+            file=sys.stderr,
+        )
         return None, 0.0
     try:
         candidates = langdetect.detect_langs(text)
-    except Exception:
+    except Exception as e:
+        print(f"[lang-detect] langdetect raised {e!r} -- giving up, returning (None, 0.0).", file=sys.stderr)
         return None, 0.0
     if not candidates:
+        print("[lang-detect] langdetect returned no candidates -- giving up, returning (None, 0.0).", file=sys.stderr)
         return None, 0.0
     top = candidates[0]
     name = LANGDETECT_CODE_TO_NAME.get(top.lang.lower())
     if name is None:
+        print(
+            f"[lang-detect] langdetect guessed code {top.lang!r} (prob={top.prob:.2f}), but it's not in "
+            "our name map -- giving up, returning (None, 0.0).",
+            file=sys.stderr,
+        )
         return None, 0.0
+    print(f"[lang-detect] Detected {name!r} with confidence {top.prob:.2f}.", file=sys.stderr)
     return name, top.prob
 
 
@@ -283,11 +319,27 @@ def check_language_mismatch(pdf_path: str, target_language: str) -> None:
     pipeline runs, so a wrong language selection fails in seconds, not after an hour
     of OCR. Only blocks on a confident detection; an inconclusive sample never blocks,
     since this is a safety check, not a guess."""
+    print(f"[lang-detect] Pre-analysis mismatch check: target_language={target_language!r}.", file=sys.stderr)
     detected_name, confidence = detect_language(pdf_path, hint_language=target_language)
     if detected_name is None or confidence < LANGUAGE_MISMATCH_MIN_CONFIDENCE:
+        print(
+            f"[lang-detect] Mismatch check inconclusive (detected={detected_name!r}, confidence={confidence:.2f}, "
+            f"threshold={LANGUAGE_MISMATCH_MIN_CONFIDENCE}) -- proceeding without blocking.",
+            file=sys.stderr,
+        )
         return
     if _language_base(detected_name) == _language_base(target_language):
+        print(
+            f"[lang-detect] Mismatch check passed: detected {detected_name!r} matches "
+            f"target_language {target_language!r}.",
+            file=sys.stderr,
+        )
         return
+    print(
+        f"[lang-detect] MISMATCH: detected {detected_name!r} (confidence={confidence:.2f}) but "
+        f"target_language is {target_language!r} -- blocking before the full pipeline runs.",
+        file=sys.stderr,
+    )
     article = "an" if detected_name[:1].lower() in "aeiou" else "a"
     raise gr.Error(
         f'This looks like {article} {detected_name} book, but you selected "{target_language}" as the '
@@ -617,12 +669,20 @@ def on_pdf_upload(pdf_file):
     if pdf_file is None:
         return gr.update(value=""), ""
     pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file.name
+    print(f"[lang-detect] PDF uploaded: {pdf_path!r} -- running pre-fill detection.", file=sys.stderr)
     try:
         name, confidence = detect_language(pdf_path)
-    except Exception:
+    except Exception as e:
+        print(f"[lang-detect] Unexpected error during upload-time detection: {e!r}", file=sys.stderr)
         name, confidence = None, 0.0
     if name is None or confidence < LANGUAGE_PREFILL_MIN_CONFIDENCE:
+        print(
+            f"[lang-detect] Pre-fill: leaving field blank (name={name!r}, confidence={confidence:.2f}, "
+            f"threshold={LANGUAGE_PREFILL_MIN_CONFIDENCE}).",
+            file=sys.stderr,
+        )
         return gr.update(value=""), "_Couldn't auto-detect language from this PDF -- please enter it manually._"
+    print(f"[lang-detect] Pre-fill: setting field to {name!r} (confidence={confidence:.2f}).", file=sys.stderr)
     return gr.update(value=name), ""
 
 
@@ -802,4 +862,13 @@ with gr.Blocks(title="Litora") as demo:
     )
 
 if __name__ == "__main__":
+    if _cloud_vision_api_key():
+        print("[startup] GOOGLE_CLOUD_VISION_API_KEY found -- OCR will use Cloud Vision.", file=sys.stderr)
+    else:
+        print(
+            "[startup] No GOOGLE_CLOUD_VISION_API_KEY found in this container's environment -- OCR will "
+            "fall back to local easyocr. If you added this secret in Space Settings, this container may "
+            "not have picked it up yet (needs a rebuild/restart) -- check the secret name matches exactly.",
+            file=sys.stderr,
+        )
     demo.queue().launch()
