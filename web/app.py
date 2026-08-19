@@ -240,16 +240,25 @@ def extract_page_texts(
 # ---------- Stage 1b: language detection ----------
 
 
-def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) -> str:
+def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) -> tuple[str, str]:
     """Grab enough text to guess a book's language without processing the whole book:
     native text from the first couple of pages, or (if that's essentially empty --
     i.e. a scan) a quick OCR of just the first page. hint_language, if given, picks
-    the OCR reader for that sample (more accurate); otherwise falls back to an
-    English-baseline reader, since at upload time the language isn't known yet."""
+    the OCR reader for that sample; Cloud Vision (when configured) doesn't need one at
+    all, since unlike easyocr it isn't locked to a single script family per pass.
+
+    Returns (sample_text, source), where source is one of "native", "cloud_vision",
+    "local_ocr_scripted" (OCR used a specific non-English script reader), or
+    "local_ocr_english_only" (OCR fell back to a blind English-only reader because
+    no hint was available and Cloud Vision isn't configured). The source matters:
+    an English-only reader forced onto an unrelated script produces garbled
+    Latin-lookalike text that langdetect can mistake for genuine English -- callers
+    use "local_ocr_english_only" to know an "English" result from that path is
+    untrustworthy, not a real detection."""
     doc = fitz.open(pdf_path)
     if doc.page_count == 0:
         print("[lang-detect] PDF has 0 pages -- no sample text available.", file=sys.stderr)
-        return ""
+        return "", "native"
     sample_pages = min(2, doc.page_count)
     text = "\n".join(doc[i].get_text() for i in range(sample_pages))
     if len(text.strip()) >= NATIVE_TEXT_THRESHOLD * sample_pages:
@@ -257,28 +266,46 @@ def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) 
             f"[lang-detect] Using native text from the first {sample_pages} page(s): {len(text.strip())} char(s).",
             file=sys.stderr,
         )
-        return text
+        return text, "native"
+
+    pix = doc[0].get_pixmap(dpi=OCR_DPI)
+    vision_key = _cloud_vision_api_key()
+    if vision_key:
+        print(
+            f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling page 1 "
+            "via Cloud Vision (no script hint needed).",
+            file=sys.stderr,
+        )
+        try:
+            text = _vision_ocr_page(pix.tobytes("png"), vision_key, None)
+        except Exception as e:
+            print(f"[lang-detect] Cloud Vision sample failed: {e!r}.", file=sys.stderr)
+            text = ""
+        print(f"[lang-detect] Cloud Vision sample produced {len(text.strip())} char(s).", file=sys.stderr)
+        return text, "cloud_vision"
 
     langs = _ocr_langs_for(hint_language) if hint_language else ("en",)
+    source = "local_ocr_english_only" if langs == ("en",) else "local_ocr_scripted"
     print(
         f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling page 1 "
-        f"with reader langs={langs} (hint_language={hint_language!r}).",
+        f"with reader langs={langs} (hint_language={hint_language!r}, source={source}).",
         file=sys.stderr,
     )
     reader = _get_ocr_reader(langs)
-    pix = doc[0].get_pixmap(dpi=OCR_DPI)
     result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
     text = "\n".join(r[1] for r in result)
     print(f"[lang-detect] OCR sample produced {len(text.strip())} char(s).", file=sys.stderr)
-    return text
+    return text, source
 
 
 def detect_language(pdf_path: str, hint_language: str | None = None) -> tuple[str | None, float]:
     """Best-effort (display_name, confidence) guess of a book's language from a quick
-    sample. Returns (None, 0.0) if there's too little text or langdetect can't decide --
-    callers must treat that as "unknown", never guess further."""
+    sample. Returns (None, 0.0) if there's too little text, langdetect can't decide,
+    or the only signal is an untrustworthy "English" guess from a blind English-only
+    OCR pass (see _sample_text_for_detection) -- callers must treat (None, 0.0) as
+    genuinely undetermined, never guess further."""
     print(f"[lang-detect] Starting detection for {pdf_path!r} (hint_language={hint_language!r}).", file=sys.stderr)
-    text = _sample_text_for_detection(pdf_path, hint_language)
+    text, source = _sample_text_for_detection(pdf_path, hint_language)
     if len(text.strip()) < LANGDETECT_MIN_CHARS:
         print(
             f"[lang-detect] Only {len(text.strip())} char(s) of sample text (< {LANGDETECT_MIN_CHARS} "
@@ -303,7 +330,15 @@ def detect_language(pdf_path: str, hint_language: str | None = None) -> tuple[st
             file=sys.stderr,
         )
         return None, 0.0
-    print(f"[lang-detect] Detected {name!r} with confidence {top.prob:.2f}.", file=sys.stderr)
+    if source == "local_ocr_english_only" and name == "English":
+        print(
+            "[lang-detect] Sample came from a blind English-only OCR pass and detected as 'English' -- "
+            "distrusting this result (forcing an unknown script through an English-only reader tends to "
+            "produce garbled text that superficially reads as English). Treating as undetermined.",
+            file=sys.stderr,
+        )
+        return None, 0.0
+    print(f"[lang-detect] Detected {name!r} with confidence {top.prob:.2f} (source={source}).", file=sys.stderr)
     return name, top.prob
 
 
