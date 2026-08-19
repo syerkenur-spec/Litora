@@ -39,9 +39,23 @@ NATIVE_TEXT_THRESHOLD = 20  # avg chars/page below this triggers OCR fallback
 PAGE_SNIPPET_CHARS = 220
 MIN_CONTENT_ITEMS = 3
 
-LANGDETECT_MIN_CHARS = 40  # below this, there's not enough sample text to trust any guess
+LANGDETECT_MIN_CHARS = 100  # langdetect can be confidently WRONG on shorter samples, not just
+# unsure -- confirmed on a real book: a 63-char correctly-OCR'd Korean sample got misclassified
+# as "Estonian" at 0.71 confidence.
+OCR_SAMPLE_PAGES = 6  # OCR is far less text-dense per page than native text, and front matter
+# (cover/copyright/blank pages) can span several pages before real content starts -- confirmed
+# on a real book: pages 0-5 totaled only 131 chars once correctly OCR'd, but page 6 alone
+# yielded 1038. Native-text sampling doesn't need this many since it's already text-dense.
 LANGUAGE_PREFILL_MIN_CONFIDENCE = 0.7  # threshold for pre-filling "Language being taught"
 LANGUAGE_MISMATCH_MIN_CONFIDENCE = 0.85  # stricter: only block Analyze on a confident mismatch
+
+# Script families to probe locally (via easyocr's own per-detection confidence) when we
+# don't know a book's language yet and Cloud Vision isn't configured -- covers Latin,
+# Hangul, Cyrillic, and CJK. A confidence gap this size is typical of a script mismatch:
+# our own test against a real scanned Korean textbook showed 0.235 avg confidence from a
+# blind English-only reader (garbled) vs 0.762 from the correct Korean reader (clean text).
+SCRIPT_PROBE_LANGS = ("en", "ko", "ru", "ch_sim")
+SCRIPT_PROBE_MIN_CONFIDENCE = 0.4  # below this even for the best candidate, treat as unusable
 
 # langdetect's ISO 639-1 codes -> the display names used in "Language being taught" and
 # (lowercased) as keys in OCR_LANGUAGE_CODES/VISION_LANGUAGE_HINTS below.
@@ -248,13 +262,14 @@ def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) 
     all, since unlike easyocr it isn't locked to a single script family per pass.
 
     Returns (sample_text, source), where source is one of "native", "cloud_vision",
-    "local_ocr_scripted" (OCR used a specific non-English script reader), or
-    "local_ocr_english_only" (OCR fell back to a blind English-only reader because
-    no hint was available and Cloud Vision isn't configured). The source matters:
-    an English-only reader forced onto an unrelated script produces garbled
-    Latin-lookalike text that langdetect can mistake for genuine English -- callers
-    use "local_ocr_english_only" to know an "English" result from that path is
-    untrustworthy, not a real detection."""
+    "local_ocr_scripted" (a specific, trusted-in script reader), or "local_ocr_probed"
+    (no trusted hint -- picked the best of several scripts by OCR confidence, or came
+    up empty if none cleared the confidence floor). A reader forced onto the wrong
+    script produces garbled Latin-lookalike text that langdetect can mistake for a
+    real language -- our own test against a real scanned Korean textbook showed a
+    blind English-only pass at 0.235 avg OCR confidence (garbage) vs 0.762 with the
+    correct Korean reader (clean text), which is why we probe by confidence with a
+    minimum floor instead of guessing blind."""
     doc = fitz.open(pdf_path)
     if doc.page_count == 0:
         print("[lang-detect] PDF has 0 pages -- no sample text available.", file=sys.stderr)
@@ -268,34 +283,107 @@ def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) 
         )
         return text, "native"
 
-    pix = doc[0].get_pixmap(dpi=OCR_DPI)
+    # A scanned book's first couple of pages are often sparse front matter (confirmed
+    # on a real book: pages 0-5 totaled only 131 chars once correctly OCR'd -- real
+    # content didn't start until page 6, which alone yielded 1038 chars) -- OCR more
+    # pages than native-text sampling needs, since each page is much less text-dense.
+    ocr_sample_pages = min(OCR_SAMPLE_PAGES, doc.page_count)
+    pix_bytes_list = [doc[i].get_pixmap(dpi=OCR_DPI).tobytes("png") for i in range(ocr_sample_pages)]
     vision_key = _cloud_vision_api_key()
     if vision_key:
         print(
-            f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling page 1 "
-            "via Cloud Vision (no script hint needed).",
+            f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling the first "
+            f"{ocr_sample_pages} page(s) via Cloud Vision (no script hint needed).",
             file=sys.stderr,
         )
-        try:
-            text = _vision_ocr_page(pix.tobytes("png"), vision_key, None)
-        except Exception as e:
-            print(f"[lang-detect] Cloud Vision sample failed: {e!r}.", file=sys.stderr)
-            text = ""
+        parts = []
+        for pix_bytes in pix_bytes_list:
+            try:
+                parts.append(_vision_ocr_page(pix_bytes, vision_key, None))
+            except Exception as e:
+                print(f"[lang-detect] Cloud Vision sample failed on a page: {e!r}.", file=sys.stderr)
+        text = "\n".join(parts)
         print(f"[lang-detect] Cloud Vision sample produced {len(text.strip())} char(s).", file=sys.stderr)
         return text, "cloud_vision"
 
-    langs = _ocr_langs_for(hint_language) if hint_language else ("en",)
-    source = "local_ocr_english_only" if langs == ("en",) else "local_ocr_scripted"
+    hinted_langs = _ocr_langs_for(hint_language) if hint_language else None
+    if hinted_langs is not None and hinted_langs != ("en",):
+        print(
+            f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling the first "
+            f"{ocr_sample_pages} page(s) with trusted-hint reader langs={hinted_langs} "
+            f"(hint_language={hint_language!r}).",
+            file=sys.stderr,
+        )
+        reader = _get_ocr_reader(hinted_langs)
+        parts = []
+        for pix_bytes in pix_bytes_list:
+            result = reader.readtext(pix_bytes, detail=1, paragraph=False)
+            parts.append("\n".join(r[1] for r in result))
+        text = "\n".join(parts)
+        print(f"[lang-detect] OCR sample produced {len(text.strip())} char(s).", file=sys.stderr)
+        return text, "local_ocr_scripted"
+
+    # No hint, or the hint itself resolves to a bare English reader (exactly as
+    # unreliable as no hint at all, if that hint turns out to be wrong) -- probe a
+    # handful of script families by OCR confidence instead of guessing blind.
     print(
-        f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) -- OCR-sampling page 1 "
-        f"with reader langs={langs} (hint_language={hint_language!r}, source={source}).",
+        f"[lang-detect] Native text too sparse ({len(text.strip())} char(s)) and no trusted script hint "
+        f"(hint_language={hint_language!r}) -- probing {SCRIPT_PROBE_LANGS} across {ocr_sample_pages} page(s) "
+        "by OCR confidence.",
         file=sys.stderr,
     )
-    reader = _get_ocr_reader(langs)
-    result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
-    text = "\n".join(r[1] for r in result)
-    print(f"[lang-detect] OCR sample produced {len(text.strip())} char(s).", file=sys.stderr)
-    return text, source
+    text, probed_langs, probed_conf = _probe_script_locally(pix_bytes_list)
+    if probed_conf < SCRIPT_PROBE_MIN_CONFIDENCE:
+        print(
+            f"[lang-detect] Best script probe ({probed_langs}) only reached confidence {probed_conf:.2f} "
+            f"(< {SCRIPT_PROBE_MIN_CONFIDENCE} minimum) -- none of the probed scripts fit well, "
+            "treating sample as unusable.",
+            file=sys.stderr,
+        )
+        return "", "local_ocr_probed"
+    # probed_langs winning fairly against ko/ru/ch_sim on OCR confidence is a real signal,
+    # English included -- unlike a blind single-pass guess, this doesn't need extra distrust.
+    return text, "local_ocr_probed"
+
+
+def _probe_script_locally(pix_bytes_list: list[bytes]) -> tuple[str, tuple[str, ...], float]:
+    """Try OCR-ing the same sample page(s) with a handful of readers covering different
+    script families, and return (text, langs, avg_confidence) for whichever one
+    easyocr itself was most confident about across all sampled pages (its own
+    per-detection confidence scores, not langdetect). Used only when we have no
+    trusted language hint and Cloud Vision isn't configured -- a genuine confidence
+    comparison beats blindly assuming English."""
+    best_conf = -1.0
+    best_text = ""
+    best_langs: tuple[str, ...] = ("en",)
+    for lang in SCRIPT_PROBE_LANGS:
+        langs = ("en",) if lang == "en" else (lang, "en")
+        try:
+            reader = _get_ocr_reader(langs)
+        except Exception as e:
+            print(f"[lang-detect] Script probe {langs} failed to load: {e!r}.", file=sys.stderr)
+            continue
+        detections = []
+        parts = []
+        for pix_bytes in pix_bytes_list:
+            try:
+                result = reader.readtext(pix_bytes, detail=1, paragraph=False)
+            except Exception as e:
+                print(f"[lang-detect] Script probe {langs} OCR failed on a page: {e!r}.", file=sys.stderr)
+                continue
+            detections.extend(result)
+            parts.append("\n".join(r[1] for r in result))
+        avg_conf = sum(r[2] for r in detections) / len(detections) if detections else 0.0
+        text = "\n".join(parts)
+        print(
+            f"[lang-detect] Script probe {langs}: avg_confidence={avg_conf:.3f}, {len(text.strip())} char(s) "
+            f"across {len(pix_bytes_list)} page(s).",
+            file=sys.stderr,
+        )
+        if avg_conf > best_conf:
+            best_conf, best_text, best_langs = avg_conf, text, langs
+    print(f"[lang-detect] Best script probe: langs={best_langs}, confidence={best_conf:.3f}.", file=sys.stderr)
+    return best_text, best_langs, best_conf
 
 
 def detect_language(pdf_path: str, hint_language: str | None = None) -> tuple[str | None, float]:
@@ -327,14 +415,6 @@ def detect_language(pdf_path: str, hint_language: str | None = None) -> tuple[st
         print(
             f"[lang-detect] langdetect guessed code {top.lang!r} (prob={top.prob:.2f}), but it's not in "
             "our name map -- giving up, returning (None, 0.0).",
-            file=sys.stderr,
-        )
-        return None, 0.0
-    if source == "local_ocr_english_only" and name == "English":
-        print(
-            "[lang-detect] Sample came from a blind English-only OCR pass and detected as 'English' -- "
-            "distrusting this result (forcing an unknown script through an English-only reader tends to "
-            "produce garbled text that superficially reads as English). Treating as undetermined.",
             file=sys.stderr,
         )
         return None, 0.0
