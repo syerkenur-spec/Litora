@@ -448,7 +448,7 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
         if used_ocr
         else "*Text was read directly from the PDF — no OCR needed.*"
     )
-    choices = [f"{c['chapter_id']} — {c['chapter_title']}" for c in chapters_meta]
+    choices = [f"{c['chapter_id']} — {c['title']}" for c in chapters_meta]
 
     return (
         format_book_structure(analyzed),
