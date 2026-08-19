@@ -104,11 +104,95 @@ def _generate_with_retry(client: genai.Client, **kwargs):
 # ---------- Stage 1: text extraction ----------
 
 
+CLOUD_VISION_ENDPOINT = "https://vision.googleapis.com/v1/images:annotate"
+CLOUD_VISION_TIMEOUT_S = 30
+
+# Google Cloud Vision's language hints; mostly the same ISO codes as OCR_LANGUAGE_CODES,
+# but Vision uses "zh"/"zh-Hans"/"zh-Hant" for Chinese (not easyocr's ch_sim/ch_tra) and
+# it does support Kazakh, which easyocr has no model for at all.
+VISION_LANGUAGE_HINTS = {
+    **{name: code for name, code in OCR_LANGUAGE_CODES.items() if not code.startswith("ch_")},
+    "chinese": "zh", "chinese (simplified)": "zh-Hans", "chinese (traditional)": "zh-Hant",
+    "serbian": "sr", "kazakh": "kk",
+}
+
+
+def _cloud_vision_api_key() -> str | None:
+    return os.environ.get("GOOGLE_CLOUD_VISION_API_KEY") or None
+
+
+def _vision_ocr_page(image_bytes: bytes, api_key: str, language_hint: str | None) -> str:
+    import base64
+    import urllib.error
+    import urllib.request
+
+    payload = {
+        "requests": [
+            {
+                "image": {"content": base64.b64encode(image_bytes).decode("ascii")},
+                "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+            }
+        ]
+    }
+    if language_hint:
+        payload["requests"][0]["imageContext"] = {"languageHints": [language_hint]}
+
+    req = urllib.request.Request(
+        f"{CLOUD_VISION_ENDPOINT}?key={api_key}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=CLOUD_VISION_TIMEOUT_S) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Cloud Vision HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}") from e
+
+    page_result = result["responses"][0]
+    if "error" in page_result:
+        raise RuntimeError(page_result["error"].get("message", "Cloud Vision error"))
+    return page_result.get("fullTextAnnotation", {}).get("text", "")
+
+
+def _cloud_ocr_pages(doc, target_language: str, progress: gr.Progress | None) -> list[str]:
+    api_key = _cloud_vision_api_key()
+    language_hint = VISION_LANGUAGE_HINTS.get((target_language or "").strip().lower())
+    pages = []
+    failures = 0
+    for i in range(doc.page_count):
+        if progress is not None:
+            progress((i + 1) / doc.page_count * 0.5, desc=f"Cloud OCR page {i + 1}/{doc.page_count}")
+        pix = doc[i].get_pixmap(dpi=OCR_DPI)
+        try:
+            pages.append(_vision_ocr_page(pix.tobytes("png"), api_key, language_hint))
+        except Exception:
+            pages.append("")
+            failures += 1
+    if failures:
+        gr.Warning(f"Cloud OCR failed on {failures} page(s); those pages were treated as blank.")
+    return pages
+
+
+def _local_ocr_pages(doc, target_language: str, progress: gr.Progress | None) -> list[str]:
+    reader = _get_ocr_reader(_ocr_langs_for(target_language))
+    pages = []
+    for i in range(doc.page_count):
+        if progress is not None:
+            progress((i + 1) / doc.page_count * 0.5, desc=f"OCR page {i + 1}/{doc.page_count}")
+        pix = doc[i].get_pixmap(dpi=OCR_DPI)
+        result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
+        pages.append("\n".join(r[1] for r in result))
+    return pages
+
+
 def extract_page_texts(
     pdf_path: str, target_language: str = "English", progress: gr.Progress | None = None
 ) -> tuple[list[str], bool]:
-    """Try the PDF's native text layer first; fall back to local OCR if it's essentially empty
-    (e.g. a scanned book with no text layer, as with the Harmonize Starter PDF)."""
+    """Try the PDF's native text layer first; fall back to OCR if it's essentially empty (e.g.
+    a scanned book with no text layer). Uses Google Cloud Vision if GOOGLE_CLOUD_VISION_API_KEY
+    is set (fast, runs on Google's infrastructure); otherwise falls back to local easyocr
+    (free, but slow on the CPU-only free tier -- can take close to an hour for a 100+ page scan)."""
     doc = fitz.open(pdf_path)
     native_pages = [doc[i].get_text() for i in range(doc.page_count)]
     avg_chars = sum(len(t) for t in native_pages) / max(doc.page_count, 1)
@@ -116,15 +200,9 @@ def extract_page_texts(
     if avg_chars >= NATIVE_TEXT_THRESHOLD:
         return native_pages, False
 
-    reader = _get_ocr_reader(_ocr_langs_for(target_language))
-    ocr_pages = []
-    for i in range(doc.page_count):
-        if progress is not None:
-            progress((i + 1) / doc.page_count * 0.5, desc=f"OCR page {i + 1}/{doc.page_count}")
-        pix = doc[i].get_pixmap(dpi=OCR_DPI)
-        result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
-        ocr_pages.append("\n".join(r[1] for r in result))
-    return ocr_pages, True
+    if _cloud_vision_api_key():
+        return _cloud_ocr_pages(doc, target_language, progress), True
+    return _local_ocr_pages(doc, target_language, progress), True
 
 
 # ---------- Stage 2: chapter boundary detection ----------

@@ -25,7 +25,9 @@ pushed to a Hugging Face Space on its own.
 1. Create a Space (SDK: Gradio) on huggingface.co, set visibility to
    **Private**.
 2. In the Space's Settings -> Repository secrets, add `GEMINI_API_KEY`.
-3. Push this directory's contents to the Space's git repo:
+3. (Optional but recommended) Also add `GOOGLE_CLOUD_VISION_API_KEY` -- see
+   "Scanned PDFs and OCR speed" below.
+4. Push this directory's contents to the Space's git repo:
 
    ```
    cd web
@@ -39,6 +41,21 @@ pushed to a Hugging Face Space on its own.
    (`--force` is safe here since the Space repo is otherwise empty; drop it
    on later pushes.) Alternatively, upload `app.py`, `requirements.txt`, and
    `README.md` via the Space's web UI.
+
+## Scanned PDFs and OCR speed
+
+Most coursebook PDFs are scans (page-images, no real text underneath) --
+Litora detects this automatically and falls back to OCR. By default that
+runs locally via `easyocr` on the Space's own CPU, which is free but slow:
+a 100+ page scan can take close to an hour on the free CPU tier.
+
+Setting `GOOGLE_CLOUD_VISION_API_KEY` (a Cloud Vision API key from a Google
+Cloud project, with the Vision API enabled) switches OCR to Google Cloud
+Vision instead -- the same book typically finishes in well under a minute,
+since it runs on Google's infrastructure rather than the Space's CPU. It's
+pay-per-page (a few dollars/month at most for occasional use) and needs its
+own Google Cloud account, separate from your Gemini API key. Without this
+secret set, the app works exactly as before (free local OCR, just slower).
 
 ## Local testing
 
