@@ -37,16 +37,40 @@ NATIVE_TEXT_THRESHOLD = 20  # avg chars/page below this triggers OCR fallback
 PAGE_SNIPPET_CHARS = 220
 MIN_CONTENT_ITEMS = 3
 
-_ocr_reader = None
+# easyocr's recognition models are grouped by script; only one non-Latin/non-Cyrillic
+# "other" script (Korean, Japanese, Chinese, Thai, Tamil, Telugu, Kannada) can be loaded
+# at a time, but each pairs fine with English. Names below are matched case-insensitively
+# against the "Language being taught" field.
+OCR_LANGUAGE_CODES = {
+    "korean": "ko", "japanese": "ja", "chinese": "ch_sim", "chinese (simplified)": "ch_sim",
+    "chinese (traditional)": "ch_tra", "thai": "th", "tamil": "ta", "telugu": "te", "kannada": "kn",
+    "russian": "ru", "ukrainian": "uk", "bulgarian": "bg", "belarusian": "be", "mongolian": "mn",
+    "serbian": "rs_latin", "french": "fr", "german": "de", "spanish": "es", "italian": "it",
+    "portuguese": "pt", "dutch": "nl", "polish": "pl", "turkish": "tr", "arabic": "ar",
+    "hindi": "hi", "bengali": "bn", "vietnamese": "vi", "czech": "cs", "slovak": "sk",
+    "slovenian": "sl", "croatian": "hr", "hungarian": "hu", "romanian": "ro", "swedish": "sv",
+    "norwegian": "no", "danish": "da", "indonesian": "id", "malay": "ms", "persian": "fa",
+    "farsi": "fa", "urdu": "ur", "azerbaijani": "az", "uzbek": "uz", "nepali": "ne",
+}
+# Languages easyocr has no model for at all (e.g. Kazakh's Cyrillic+extra letters): fall
+# back to English-only OCR rather than silently mis-loading an unrelated script.
+
+_ocr_readers: dict[tuple[str, ...], object] = {}
 
 
-def _get_ocr_reader():
-    global _ocr_reader
-    if _ocr_reader is None:
+def _ocr_langs_for(target_language: str) -> tuple[str, ...]:
+    code = OCR_LANGUAGE_CODES.get((target_language or "").strip().lower())
+    if not code or code == "en":
+        return ("en",)
+    return (code, "en")
+
+
+def _get_ocr_reader(langs: tuple[str, ...]):
+    if langs not in _ocr_readers:
         import easyocr
 
-        _ocr_reader = easyocr.Reader(["en"], gpu=False)
-    return _ocr_reader
+        _ocr_readers[langs] = easyocr.Reader(list(langs), gpu=False)
+    return _ocr_readers[langs]
 
 
 def _client() -> genai.Client:
@@ -80,7 +104,9 @@ def _generate_with_retry(client: genai.Client, **kwargs):
 # ---------- Stage 1: text extraction ----------
 
 
-def extract_page_texts(pdf_path: str, progress: gr.Progress | None = None) -> tuple[list[str], bool]:
+def extract_page_texts(
+    pdf_path: str, target_language: str = "English", progress: gr.Progress | None = None
+) -> tuple[list[str], bool]:
     """Try the PDF's native text layer first; fall back to local OCR if it's essentially empty
     (e.g. a scanned book with no text layer, as with the Harmonize Starter PDF)."""
     doc = fitz.open(pdf_path)
@@ -90,7 +116,7 @@ def extract_page_texts(pdf_path: str, progress: gr.Progress | None = None) -> tu
     if avg_chars >= NATIVE_TEXT_THRESHOLD:
         return native_pages, False
 
-    reader = _get_ocr_reader()
+    reader = _get_ocr_reader(_ocr_langs_for(target_language))
     ocr_pages = []
     for i in range(doc.page_count):
         if progress is not None:
@@ -419,7 +445,7 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
     pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file.name
 
     progress(0, desc="Reading PDF...")
-    page_texts, used_ocr = extract_page_texts(pdf_path, progress)
+    page_texts, used_ocr = extract_page_texts(pdf_path, target_language, progress)
 
     client = _client()
 
@@ -495,7 +521,11 @@ with gr.Blocks(title="Litora") as demo:
 
     with gr.Row():
         pdf_input = gr.File(label="Coursebook PDF", file_types=[".pdf"])
-        target_language_input = gr.Textbox(label="Language being taught", value="English")
+        target_language_input = gr.Textbox(
+            label="Language being taught",
+            value="English",
+            info="Also picks the OCR language for scanned PDFs (e.g. \"Korean\", \"Russian\").",
+        )
 
     analyze_btn = gr.Button("1. Analyze book", variant="primary")
     ocr_note_output = gr.Markdown()
