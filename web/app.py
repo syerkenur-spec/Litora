@@ -76,7 +76,7 @@ def _get_ocr_reader(langs: tuple[str, ...]):
 def _client() -> genai.Client:
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set (add it as a Space secret).")
+        raise gr.Error("GEMINI_API_KEY is not set (add it as a Space secret in Settings -> Repository secrets).")
     return genai.Client(api_key=api_key)
 
 
@@ -175,7 +175,7 @@ def detect_chapters(client: genai.Client, page_texts: list[str]) -> list[dict]:
             system_instruction=CHAPTER_DETECT_PROMPT,
             response_mime_type="application/json",
             response_schema=_gemini_schema(CHAPTER_DETECT_SCHEMA),
-            max_output_tokens=4000,
+            max_output_tokens=8000,
         ),
     )
     return json.loads(response.text)["chapters"]
@@ -397,7 +397,10 @@ def generate_test(
             max_output_tokens=8000,
         ),
     )
-    result = json.loads(response.text)
+    try:
+        result = json.loads(response.text)
+    except (json.JSONDecodeError, TypeError) as e:
+        return {"status": "error", "message": f"Gemini's response couldn't be read as a test ({e}). Try again."}
     result["status"] = "ok"
     return result
 
@@ -450,7 +453,13 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
     client = _client()
 
     progress(0.5, desc="Detecting chapters...")
-    chapters_meta = detect_chapters(client, page_texts)
+    try:
+        chapters_meta = detect_chapters(client, page_texts)
+    except Exception as e:
+        raise gr.Error(
+            f"Text extraction succeeded, but chapter detection failed ({e}). Your upload wasn't wasted -- "
+            "try clicking Analyze again."
+        ) from e
     if not chapters_meta:
         raise gr.Error("Couldn't detect any chapters in this PDF.")
 
@@ -466,7 +475,22 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
     analyzed = []
     for i, c in enumerate(chapters_meta):
         progress(0.55 + 0.4 * (i / len(chapters_meta)), desc=f"Analyzing {c['chapter_id']}...")
-        analyzed.append(analyze_chapter(client, c["chapter_id"], chapter_texts[c["chapter_id"]]))
+        try:
+            analyzed.append(analyze_chapter(client, c["chapter_id"], chapter_texts[c["chapter_id"]]))
+        except Exception as e:
+            # One chapter's Gemini call failing (rate limit, safety block, malformed
+            # response) shouldn't discard every other chapter's already-successful results.
+            analyzed.append(
+                {
+                    "chapter_id": c["chapter_id"],
+                    "chapter_title": c.get("title", c["chapter_id"]),
+                    "vocabulary": [],
+                    "grammar_points": [],
+                    "difficulty": {"cefr": "Unknown", "confidence": "low"},
+                    "unclear": True,
+                    "unclear_reason": f"Analysis failed: {e}",
+                }
+            )
 
     progress(1.0, desc="Done")
     ocr_note = (
@@ -498,11 +522,19 @@ def run_test_generation(
 
     client = _client()
     label = week_label or ", ".join(selected_ids)
-    test = generate_test(
-        client, selected_chapters, label, instruction_language or "English", target_language or "English", selected_texts
-    )
+    try:
+        test = generate_test(
+            client,
+            selected_chapters,
+            label,
+            instruction_language or "English",
+            target_language or "English",
+            selected_texts,
+        )
+    except Exception as e:
+        raise gr.Error(f"Test generation failed ({e}). Your book analysis wasn't lost -- try generating again.") from e
 
-    if test["status"] == "insufficient_content":
+    if test["status"] != "ok":
         raise gr.Error(test["message"])
 
     return format_test(test), format_answer_key(test)
