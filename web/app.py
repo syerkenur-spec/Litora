@@ -755,23 +755,69 @@ def format_book_structure(chapters: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def format_test(test: dict) -> str:
-    lines = [f"## {test['class_or_week_label']}", ""]
-    for q in test["questions"]:
-        lines.append(f"**{q['id']}** — _{q['topic']}: {q['specific_topic']}_ ({q['type']})")
-        lines.append(q["prompt"])
-        if q["choices"]:
-            lines.append("")
-            lines.extend(f"- {choice}" for choice in q["choices"])
-        lines.append("")
-    return "\n".join(lines)
+MAX_QUESTIONS = 30  # Gradio needs a fixed set of components pre-allocated; this comfortably
+# covers the app's own guidance (8-12 questions/chapter) for a 1-3 chapter selection, which
+# covers typical weekly-test usage. A larger generated test gets truncated with a warning.
 
 
-def format_answer_key(test: dict) -> str:
-    lines = ["## Answer key", ""]
-    for q in test["questions"]:
-        lines.append(f"- **{q['id']}**: {q['answer']}")
-    return "\n".join(lines)
+def _blank_question_updates() -> tuple:
+    """gr.update() tuple for one hidden, empty question slot: (group, label, radio, textbox)."""
+    return (
+        gr.update(visible=False),
+        gr.update(value=""),
+        gr.update(visible=False, choices=[], value=None),
+        gr.update(visible=False, value=""),
+    )
+
+
+def _question_slot_updates(q: dict) -> tuple:
+    """gr.update() tuple for one populated, visible question slot: (group, label, radio, textbox)."""
+    label = f"**{q['id']}** — _{q['topic']}: {q['specific_topic']}_ ({q['type']})\n\n{q['prompt']}"
+    if q["type"] == "multiple_choice":
+        return (
+            gr.update(visible=True),
+            gr.update(value=label),
+            gr.update(visible=True, choices=q["choices"], value=None),
+            gr.update(visible=False, value=""),
+        )
+    return (
+        gr.update(visible=True),
+        gr.update(value=label),
+        gr.update(visible=False, choices=[], value=None),
+        gr.update(visible=True, value=""),
+    )
+
+
+def grade_test(test: dict, *args):
+    """Grades submitted answers against test["answer"] -- case-insensitive, whitespace-trimmed
+    exact match. Returns a single update for the results block (score + per-question
+    correct/incorrect + correct answers for misses), which is the only place the answer key
+    is ever shown -- it's never rendered before this runs."""
+    if not test:
+        raise gr.Error("Generate a test first.")
+    questions = test["questions"]
+    n = len(questions)
+    radio_vals = args[:MAX_QUESTIONS]
+    text_vals = args[MAX_QUESTIONS:]
+
+    correct_count = 0
+    lines = []
+    for i, q in enumerate(questions):
+        submitted = radio_vals[i] if q["type"] == "multiple_choice" else text_vals[i]
+        submitted_norm = (submitted or "").strip()
+        correct_norm = q["answer"].strip()
+        is_correct = submitted_norm.lower() == correct_norm.lower()
+        if is_correct:
+            correct_count += 1
+            lines.append(f"✅ **{q['id']}** — your answer: {submitted_norm or '_(no answer)_'}")
+        else:
+            lines.append(
+                f"❌ **{q['id']}** — your answer: {submitted_norm or '_(no answer)_'} "
+                f"— correct answer: **{correct_norm}**"
+            )
+
+    header = f"## Results: {correct_count}/{n} correct\n\n"
+    return gr.update(visible=True, value=header + "\n\n".join(lines))
 
 
 # ---------- Gradio callbacks ----------
@@ -906,7 +952,29 @@ def run_test_generation(
     if test["status"] != "ok":
         raise gr.Error(test["message"])
 
-    return format_test(test), format_answer_key(test)
+    questions = test["questions"]
+    if len(questions) > MAX_QUESTIONS:
+        gr.Warning(
+            f"Generated {len(questions)} questions, but only the first {MAX_QUESTIONS} can be shown here "
+            "-- try selecting fewer chapters at once for a shorter test."
+        )
+        questions = questions[:MAX_QUESTIONS]
+        test = {**test, "questions": questions}
+
+    slot_updates = []
+    for i in range(MAX_QUESTIONS):
+        if i < len(questions):
+            slot_updates.extend(_question_slot_updates(questions[i]))
+        else:
+            slot_updates.extend(_blank_question_updates())
+
+    return (
+        test,
+        gr.update(value=f"## {test['class_or_week_label']}"),
+        gr.update(visible=True),  # submit_btn
+        gr.update(visible=False, value=""),  # results_output
+        *slot_updates,
+    )
 
 
 with gr.Blocks(title="Litora") as demo:
@@ -944,9 +1012,21 @@ with gr.Blocks(title="Litora") as demo:
         )
     generate_btn = gr.Button("3. Generate test", variant="primary", interactive=False)
 
-    with gr.Row():
-        test_output = gr.Markdown(label="Student test")
-        answer_key_output = gr.Markdown(label="Answer key")
+    test_state = gr.State()
+    test_header = gr.Markdown()
+    question_groups, question_labels, question_radios, question_texts = [], [], [], []
+    for _ in range(MAX_QUESTIONS):
+        with gr.Group(visible=False) as grp:
+            lbl = gr.Markdown()
+            radio = gr.Radio(show_label=False, visible=False)
+            text = gr.Textbox(show_label=False, visible=False, placeholder="Your answer")
+        question_groups.append(grp)
+        question_labels.append(lbl)
+        question_radios.append(radio)
+        question_texts.append(text)
+
+    submit_btn = gr.Button("Submit answers", variant="primary", visible=False)
+    results_output = gr.Markdown(visible=False)
 
     pdf_input.upload(
         on_pdf_upload,
@@ -963,6 +1043,9 @@ with gr.Blocks(title="Litora") as demo:
         inputs=[pdf_input, target_language_input],
         outputs=[book_structure_output, ocr_note_output, analyzed_state, chapter_texts_state, chapter_select],
     )
+    slot_outputs = [
+        c for i in range(MAX_QUESTIONS) for c in (question_groups[i], question_labels[i], question_radios[i], question_texts[i])
+    ]
     generate_btn.click(
         run_test_generation,
         inputs=[
@@ -973,7 +1056,12 @@ with gr.Blocks(title="Litora") as demo:
             instruction_language_input,
             target_language_input,
         ],
-        outputs=[test_output, answer_key_output],
+        outputs=[test_state, test_header, submit_btn, results_output] + slot_outputs,
+    )
+    submit_btn.click(
+        grade_test,
+        inputs=[test_state] + question_radios + question_texts,
+        outputs=[results_output],
     )
 
 if __name__ == "__main__":
