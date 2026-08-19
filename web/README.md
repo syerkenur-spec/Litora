@@ -16,6 +16,15 @@ a scan with no text layer), detects the real teaching chapters, extracts
 vocabulary/grammar per chapter, and generates a test from whichever chapters
 you select.
 
+On upload, Litora also auto-detects and pre-fills "Language being taught"
+from a quick sample of the PDF (editable if it guesses wrong; left blank
+with a note if it can't tell). Before running the full analysis, it
+double-checks that sample against whatever "Language being taught" says --
+if they clearly don't match, it stops immediately with an error instead of
+running the full OCR/analysis pipeline on the wrong assumption. "Analyze
+book" and "Generate test" stay disabled until "Instruction language" is
+filled in.
+
 Self-contained: `app.py` duplicates the core logic from `../book_analyzer`
 and `../test_generator` rather than importing them, so this directory can be
 pushed to a Hugging Face Space on its own.

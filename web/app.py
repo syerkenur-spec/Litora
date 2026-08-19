@@ -22,6 +22,7 @@ import time
 
 import fitz  # pymupdf
 import gradio as gr
+import langdetect
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
@@ -36,6 +37,27 @@ OCR_DPI = 200
 NATIVE_TEXT_THRESHOLD = 20  # avg chars/page below this triggers OCR fallback
 PAGE_SNIPPET_CHARS = 220
 MIN_CONTENT_ITEMS = 3
+
+LANGDETECT_MIN_CHARS = 40  # below this, there's not enough sample text to trust any guess
+LANGUAGE_PREFILL_MIN_CONFIDENCE = 0.7  # threshold for pre-filling "Language being taught"
+LANGUAGE_MISMATCH_MIN_CONFIDENCE = 0.85  # stricter: only block Analyze on a confident mismatch
+
+# langdetect's ISO 639-1 codes -> the display names used in "Language being taught" and
+# (lowercased) as keys in OCR_LANGUAGE_CODES/VISION_LANGUAGE_HINTS below.
+LANGDETECT_CODE_TO_NAME = {
+    "en": "English", "ko": "Korean", "ja": "Japanese", "zh-cn": "Chinese (Simplified)",
+    "zh-tw": "Chinese (Traditional)", "ru": "Russian", "uk": "Ukrainian", "bg": "Bulgarian",
+    "be": "Belarusian", "mn": "Mongolian", "sr": "Serbian", "fr": "French", "de": "German",
+    "es": "Spanish", "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
+    "tr": "Turkish", "ar": "Arabic", "hi": "Hindi", "bn": "Bengali", "vi": "Vietnamese",
+    "cs": "Czech", "sk": "Slovak", "sl": "Slovenian", "hr": "Croatian", "hu": "Hungarian",
+    "ro": "Romanian", "sv": "Swedish", "no": "Norwegian", "da": "Danish", "id": "Indonesian",
+    "ms": "Malay", "fa": "Persian", "ur": "Urdu", "az": "Azerbaijani", "uz": "Uzbek",
+    "ne": "Nepali", "th": "Thai", "ta": "Tamil", "te": "Telugu", "kn": "Kannada", "kk": "Kazakh",
+    "el": "Greek", "he": "Hebrew", "fi": "Finnish", "et": "Estonian", "lv": "Latvian",
+    "lt": "Lithuanian", "ca": "Catalan", "gu": "Gujarati", "mr": "Marathi", "pa": "Punjabi",
+    "sw": "Swahili", "af": "Afrikaans", "tl": "Tagalog", "cy": "Welsh",
+}
 
 # easyocr's recognition models are grouped by script; only one non-Latin/non-Cyrillic
 # "other" script (Korean, Japanese, Chinese, Thai, Tamil, Telugu, Kannada) can be loaded
@@ -203,6 +225,74 @@ def extract_page_texts(
     if _cloud_vision_api_key():
         return _cloud_ocr_pages(doc, target_language, progress), True
     return _local_ocr_pages(doc, target_language, progress), True
+
+
+# ---------- Stage 1b: language detection ----------
+
+
+def _sample_text_for_detection(pdf_path: str, hint_language: str | None = None) -> str:
+    """Grab enough text to guess a book's language without processing the whole book:
+    native text from the first couple of pages, or (if that's essentially empty --
+    i.e. a scan) a quick OCR of just the first page. hint_language, if given, picks
+    the OCR reader for that sample (more accurate); otherwise falls back to an
+    English-baseline reader, since at upload time the language isn't known yet."""
+    doc = fitz.open(pdf_path)
+    if doc.page_count == 0:
+        return ""
+    sample_pages = min(2, doc.page_count)
+    text = "\n".join(doc[i].get_text() for i in range(sample_pages))
+    if len(text.strip()) >= NATIVE_TEXT_THRESHOLD * sample_pages:
+        return text
+
+    langs = _ocr_langs_for(hint_language) if hint_language else ("en",)
+    reader = _get_ocr_reader(langs)
+    pix = doc[0].get_pixmap(dpi=OCR_DPI)
+    result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
+    return "\n".join(r[1] for r in result)
+
+
+def detect_language(pdf_path: str, hint_language: str | None = None) -> tuple[str | None, float]:
+    """Best-effort (display_name, confidence) guess of a book's language from a quick
+    sample. Returns (None, 0.0) if there's too little text or langdetect can't decide --
+    callers must treat that as "unknown", never guess further."""
+    text = _sample_text_for_detection(pdf_path, hint_language)
+    if len(text.strip()) < LANGDETECT_MIN_CHARS:
+        return None, 0.0
+    try:
+        candidates = langdetect.detect_langs(text)
+    except Exception:
+        return None, 0.0
+    if not candidates:
+        return None, 0.0
+    top = candidates[0]
+    name = LANGDETECT_CODE_TO_NAME.get(top.lang.lower())
+    if name is None:
+        return None, 0.0
+    return name, top.prob
+
+
+def _language_base(name: str) -> str:
+    """Normalizes e.g. "Chinese (Simplified)" and "chinese" to the same "chinese" so
+    reasonable variant spellings aren't treated as a mismatch."""
+    return name.strip().lower().split(" (")[0]
+
+
+def check_language_mismatch(pdf_path: str, target_language: str) -> None:
+    """Raises gr.Error if a quick sample of the book clearly doesn't match the stated
+    "Language being taught" -- called before the expensive full-book OCR/analysis
+    pipeline runs, so a wrong language selection fails in seconds, not after an hour
+    of OCR. Only blocks on a confident detection; an inconclusive sample never blocks,
+    since this is a safety check, not a guess."""
+    detected_name, confidence = detect_language(pdf_path, hint_language=target_language)
+    if detected_name is None or confidence < LANGUAGE_MISMATCH_MIN_CONFIDENCE:
+        return
+    if _language_base(detected_name) == _language_base(target_language):
+        return
+    article = "an" if detected_name[:1].lower() in "aeiou" else "a"
+    raise gr.Error(
+        f'This looks like {article} {detected_name} book, but you selected "{target_language}" as the '
+        "language being taught -- please check the PDF or update the language field."
+    )
 
 
 # ---------- Stage 2: chapter boundary detection ----------
@@ -520,12 +610,38 @@ def format_answer_key(test: dict) -> str:
 # ---------- Gradio callbacks ----------
 
 
+def on_pdf_upload(pdf_file):
+    """Pre-fills "Language being taught" from a quick sample of the upload. Never
+    guesses past the confidence threshold -- on failure/low confidence, leaves the
+    field blank with an inline note instead, so the user isn't silently steered wrong."""
+    if pdf_file is None:
+        return gr.update(value=""), ""
+    pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file.name
+    try:
+        name, confidence = detect_language(pdf_path)
+    except Exception:
+        name, confidence = None, 0.0
+    if name is None or confidence < LANGUAGE_PREFILL_MIN_CONFIDENCE:
+        return gr.update(value=""), "_Couldn't auto-detect language from this PDF -- please enter it manually._"
+    return gr.update(value=name), ""
+
+
+def toggle_action_buttons(instruction_language):
+    enabled = bool((instruction_language or "").strip())
+    return gr.update(interactive=enabled), gr.update(interactive=enabled)
+
+
 def run_analysis(pdf_file, target_language, progress=gr.Progress()):
     if pdf_file is None:
         raise gr.Error("Upload a PDF first.")
+    if not (target_language or "").strip():
+        raise gr.Error("Enter the language being taught first (auto-detect couldn't determine it).")
     pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file.name
 
-    progress(0, desc="Reading PDF...")
+    progress(0, desc="Checking language...")
+    check_language_mismatch(pdf_path, target_language)
+
+    progress(0.02, desc="Reading PDF...")
     page_texts, used_ocr = extract_page_texts(pdf_path, target_language, progress)
 
     client = _client()
@@ -634,10 +750,12 @@ with gr.Blocks(title="Litora") as demo:
         target_language_input = gr.Textbox(
             label="Language being taught",
             value="English",
-            info="Also picks the OCR language for scanned PDFs (e.g. \"Korean\", \"Russian\").",
+            info="Auto-filled from the PDF on upload; also picks the OCR language for scans "
+            '(e.g. "Korean", "Russian"). Edit it if the guess is wrong.',
         )
+    language_detect_note = gr.Markdown()
 
-    analyze_btn = gr.Button("1. Analyze book", variant="primary")
+    analyze_btn = gr.Button("1. Analyze book", variant="primary", interactive=False)
     ocr_note_output = gr.Markdown()
     book_structure_output = gr.Markdown()
 
@@ -647,14 +765,24 @@ with gr.Blocks(title="Litora") as demo:
     with gr.Row():
         week_label_input = gr.Textbox(label="Week/class label", placeholder="e.g. Week 1")
         instruction_language_input = gr.Textbox(
-            label="Instruction language", value="English", placeholder="e.g. Kazakh"
+            label="Instruction language", value="", placeholder="e.g. English, Kazakh"
         )
-    generate_btn = gr.Button("3. Generate test", variant="primary")
+    generate_btn = gr.Button("3. Generate test", variant="primary", interactive=False)
 
     with gr.Row():
         test_output = gr.Markdown(label="Student test")
         answer_key_output = gr.Markdown(label="Answer key")
 
+    pdf_input.upload(
+        on_pdf_upload,
+        inputs=[pdf_input],
+        outputs=[target_language_input, language_detect_note],
+    )
+    instruction_language_input.change(
+        toggle_action_buttons,
+        inputs=[instruction_language_input],
+        outputs=[analyze_btn, generate_btn],
+    )
     analyze_btn.click(
         run_analysis,
         inputs=[pdf_input, target_language_input],
