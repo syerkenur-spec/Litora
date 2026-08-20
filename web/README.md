@@ -80,14 +80,28 @@ breaks page load entirely (shows as "Failed to fetch" on this gate screen)
 regardless of whether you're using Gradio's own auth features at all.
 
 **If you're using a Custom Domain (Settings -> Custom Domain) instead of
-the default `*.hf.space` URL:** also set a `GRADIO_ROOT_PATH` Variable
-(Settings -> Variables, no need for a Secret) to your domain's full HTTPS
-URL, e.g. `https://litora.space`. Without it, Gradio can misdetect its own
-scheme as `http://` behind the domain proxy and try to load `/config` and
-`theme.css` over plain HTTP — browsers block that as mixed content on an
-HTTPS page, which looks exactly like this gate screen being frozen
-(nothing responds to typing/clicking) even though the app loads fine on
-the raw `*.hf.space` URL.
+the default `*.hf.space` URL:** also set two Space Variables (Settings ->
+Variables, no need for Secrets):
+
+- `GRADIO_ROOT_PATH` = your domain's full HTTPS URL, e.g.
+  `https://litora.space`. Without it, Gradio can misdetect its own scheme
+  as `http://` behind the domain proxy and try to load `/config` and
+  `theme.css` over plain HTTP -- browsers block that as mixed content on an
+  HTTPS page.
+- `GRADIO_SSR_MODE` = `False`. Hugging Face Spaces enables Gradio's
+  server-side-rendering mode by default on newer Gradio versions; on a
+  custom domain it can still embed a second, separately-computed
+  `root_url` (paired with the raw internal `http://0.0.0.0:<port>` address)
+  in its hydration data that ignores `GRADIO_ROOT_PATH` and hardcodes
+  `http://` -- the frontend then tries to `fetch()` that instead, hitting
+  the same mixed-content block even with `GRADIO_ROOT_PATH` set correctly.
+  Disabling SSR (irrelevant for a gated internal tool -- it mainly helps
+  SEO/first-paint on public pages) avoids that code path entirely.
+
+Both symptoms look identical from the browser: the gate screen loads but
+nothing responds to typing/clicking, with "Mixed Content" / "Failed to
+fetch" errors in the console -- while the app works fine on the raw
+`*.hf.space` URL. Set both variables if you hit this.
 
 If instead you want access restricted to specific named people who already
 have (or are willing to make) Hugging Face accounts, use a **Private** Space
