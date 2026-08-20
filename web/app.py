@@ -59,11 +59,18 @@ CACHE_DATASET_REPO = os.environ.get("LITORA_CACHE_DATASET_REPO")  # e.g. "yourna
 # determined attacker -- it's a lightweight, per-browser-session gate (see check_access_code()).
 LITORA_ACCESS_CODES = os.environ.get("LITORA_ACCESS_CODES")
 
+# Baked-in fallback code, always valid in addition to whatever LITORA_ACCESS_CODES adds -- a
+# safety net in case that secret isn't set/picked up. NOTE: unlike the secret, this is visible
+# to anyone who can view this file (e.g. the Space's Files tab on a Public Space) -- once the
+# secret is confirmed working, consider removing this or rotating it to something you control.
+FALLBACK_ACCESS_CODES = {"KPSM-J5W5"}
+
 
 def _parse_access_codes(raw: str | None) -> set[str]:
-    if not raw:
-        return set()
-    return {code.strip() for code in raw.split(",") if code.strip()}
+    codes = set(FALLBACK_ACCESS_CODES)
+    if raw:
+        codes |= {code.strip() for code in raw.split(",") if code.strip()}
+    return codes
 
 LANGDETECT_MIN_CHARS = 100  # langdetect can be confidently WRONG on shorter samples, not just
 # unsure -- confirmed on a real book: a 63-char correctly-OCR'd Korean sample got misclassified
@@ -1276,13 +1283,13 @@ if __name__ == "__main__":
         )
 
     access_codes = _parse_access_codes(LITORA_ACCESS_CODES)
-    if access_codes:
-        print(f"[startup] Access-code gate enabled -- {len(access_codes)} valid code(s) configured.", file=sys.stderr)
-    else:
+    if not LITORA_ACCESS_CODES:
         print(
-            "[startup] LITORA_ACCESS_CODES is not set -- the access-code gate will reject every code "
-            "entered (nobody gets past the gate screen). Set LITORA_ACCESS_CODES=\"CODE1,CODE2,...\" "
-            "as a Space secret to let people in.",
+            f"[startup] LITORA_ACCESS_CODES is not set -- only the {len(FALLBACK_ACCESS_CODES)} baked-in "
+            "fallback code(s) work right now. Set LITORA_ACCESS_CODES=\"CODE1,CODE2,...\" as a Space secret "
+            "to add more without editing code.",
             file=sys.stderr,
         )
+    else:
+        print(f"[startup] Access-code gate enabled -- {len(access_codes)} valid code(s) configured.", file=sys.stderr)
     demo.queue().launch()
