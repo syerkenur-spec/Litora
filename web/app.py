@@ -52,6 +52,19 @@ MIN_CONTENT_ITEMS = 3
 CACHE_DATASET_REPO = os.environ.get("LITORA_CACHE_DATASET_REPO")  # e.g. "yourname/litora-book-cache";
 # unset (default) disables the analyzed-book cache entirely.
 
+# In-app access-code gate (a single shared textbox, not a browser login popup) -- lets you share
+# the app's URL publicly (e.g. on a custom domain) while still keeping randoms/search engines out.
+# Set as a Space secret: "SDU2026,TEACHER-01,TEACHER-02" -- one code per teacher/class, editable
+# without a redeploy (just update the secret; the Space restarts itself). Not meant to stop a
+# determined attacker -- it's a lightweight, per-browser-session gate (see check_access_code()).
+LITORA_ACCESS_CODES = os.environ.get("LITORA_ACCESS_CODES")
+
+
+def _parse_access_codes(raw: str | None) -> set[str]:
+    if not raw:
+        return set()
+    return {code.strip() for code in raw.split(",") if code.strip()}
+
 LANGDETECT_MIN_CHARS = 100  # langdetect can be confidently WRONG on shorter samples, not just
 # unsure -- confirmed on a real book: a 63-char correctly-OCR'd Korean sample got misclassified
 # as "Estonian" at 0.71 confidence.
@@ -1119,89 +1132,122 @@ def run_test_generation(
     )
 
 
+def check_access_code(code: str):
+    """Reveals the app column and hides the gate column on a valid code; otherwise shows an
+    error and leaves the app hidden. Visibility updates apply per browser session (Gradio's
+    normal per-client state), so this is a lightweight session gate, not real authentication --
+    by design (see LITORA_ACCESS_CODES above), it doesn't need to survive a determined attacker."""
+    valid_codes = _parse_access_codes(LITORA_ACCESS_CODES)
+    if (code or "").strip() in valid_codes:
+        return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False, value="")
+    return (
+        gr.update(visible=True),
+        gr.update(visible=False),
+        gr.update(visible=True, value="❌ Invalid access code."),
+    )
+
+
 with gr.Blocks(title="Litora") as demo:
-    gr.Markdown(
-        "# Litora — book to test\n"
-        "Upload a coursebook PDF. Litora reads it (OCR if it's a scan), finds the real teaching "
-        "chapters, extracts vocabulary/grammar per chapter, and generates a test from whichever "
-        "chapters you pick."
-    )
+    with gr.Column(visible=True) as gate_column:
+        gr.Markdown("# Litora\nEnter your access code to continue.")
+        access_code_input = gr.Textbox(label="Access code", type="password")
+        access_code_btn = gr.Button("Enter", variant="primary")
+        access_code_error = gr.Markdown(visible=False)
 
-    analyzed_state = gr.State()
-    chapter_texts_state = gr.State()
-
-    with gr.Row():
-        pdf_input = gr.File(label="Coursebook PDF", file_types=[".pdf"])
-        target_language_input = gr.Textbox(
-            label="Language being taught",
-            value="English",
-            info="Auto-filled from the PDF on upload; also picks the OCR language for scans "
-            '(e.g. "Korean", "Russian"). Edit it if the guess is wrong.',
+    with gr.Column(visible=False) as app_column:
+        gr.Markdown(
+            "# Litora — book to test\n"
+            "Upload a coursebook PDF. Litora reads it (OCR if it's a scan), finds the real teaching "
+            "chapters, extracts vocabulary/grammar per chapter, and generates a test from whichever "
+            "chapters you pick."
         )
-    language_detect_note = gr.Markdown()
 
-    analyze_btn = gr.Button("1. Analyze book", variant="primary", interactive=False)
-    ocr_note_output = gr.Markdown()
-    book_structure_output = gr.Markdown()
+        analyzed_state = gr.State()
+        chapter_texts_state = gr.State()
 
-    gr.Markdown("---")
+        with gr.Row():
+            pdf_input = gr.File(label="Coursebook PDF", file_types=[".pdf"])
+            target_language_input = gr.Textbox(
+                label="Language being taught",
+                value="English",
+                info="Auto-filled from the PDF on upload; also picks the OCR language for scans "
+                '(e.g. "Korean", "Russian"). Edit it if the guess is wrong.',
+            )
+        language_detect_note = gr.Markdown()
 
-    chapter_select = gr.CheckboxGroup(label="2. Chapters to test", choices=[])
-    with gr.Row():
-        week_label_input = gr.Textbox(label="Week/class label", placeholder="e.g. Week 1")
-        instruction_language_input = gr.Textbox(
-            label="Instruction language", value="", placeholder="e.g. English, Kazakh"
+        analyze_btn = gr.Button("1. Analyze book", variant="primary", interactive=False)
+        ocr_note_output = gr.Markdown()
+        book_structure_output = gr.Markdown()
+
+        gr.Markdown("---")
+
+        chapter_select = gr.CheckboxGroup(label="2. Chapters to test", choices=[])
+        with gr.Row():
+            week_label_input = gr.Textbox(label="Week/class label", placeholder="e.g. Week 1")
+            instruction_language_input = gr.Textbox(
+                label="Instruction language", value="", placeholder="e.g. English, Kazakh"
+            )
+        generate_btn = gr.Button("3. Generate test", variant="primary", interactive=False)
+
+        test_state = gr.State()
+        test_header = gr.Markdown()
+        question_groups, question_labels, question_texts = [], [], []
+        for _ in range(MAX_QUESTIONS):
+            with gr.Group(visible=False) as grp:
+                lbl = gr.Markdown()
+                text = gr.Textbox(show_label=False, visible=False, placeholder="Your answer")
+            question_groups.append(grp)
+            question_labels.append(lbl)
+            question_texts.append(text)
+
+        submit_btn = gr.Button("Submit answers", variant="primary", visible=False)
+        results_output = gr.Markdown(visible=False)
+
+        pdf_input.upload(
+            on_pdf_upload,
+            inputs=[pdf_input],
+            outputs=[target_language_input, language_detect_note],
         )
-    generate_btn = gr.Button("3. Generate test", variant="primary", interactive=False)
+        instruction_language_input.change(
+            toggle_action_buttons,
+            inputs=[instruction_language_input],
+            outputs=[analyze_btn, generate_btn],
+        )
+        analyze_btn.click(
+            run_analysis,
+            inputs=[pdf_input, target_language_input],
+            outputs=[book_structure_output, ocr_note_output, analyzed_state, chapter_texts_state, chapter_select],
+        )
+        slot_outputs = [
+            c for i in range(MAX_QUESTIONS) for c in (question_groups[i], question_labels[i], question_texts[i])
+        ]
+        generate_btn.click(
+            run_test_generation,
+            inputs=[
+                analyzed_state,
+                chapter_texts_state,
+                chapter_select,
+                week_label_input,
+                instruction_language_input,
+                target_language_input,
+            ],
+            outputs=[test_state, test_header, submit_btn, results_output] + slot_outputs,
+        )
+        submit_btn.click(
+            grade_test,
+            inputs=[test_state] + question_texts,
+            outputs=[results_output],
+        )
 
-    test_state = gr.State()
-    test_header = gr.Markdown()
-    question_groups, question_labels, question_texts = [], [], []
-    for _ in range(MAX_QUESTIONS):
-        with gr.Group(visible=False) as grp:
-            lbl = gr.Markdown()
-            text = gr.Textbox(show_label=False, visible=False, placeholder="Your answer")
-        question_groups.append(grp)
-        question_labels.append(lbl)
-        question_texts.append(text)
-
-    submit_btn = gr.Button("Submit answers", variant="primary", visible=False)
-    results_output = gr.Markdown(visible=False)
-
-    pdf_input.upload(
-        on_pdf_upload,
-        inputs=[pdf_input],
-        outputs=[target_language_input, language_detect_note],
+    access_code_btn.click(
+        check_access_code,
+        inputs=[access_code_input],
+        outputs=[gate_column, app_column, access_code_error],
     )
-    instruction_language_input.change(
-        toggle_action_buttons,
-        inputs=[instruction_language_input],
-        outputs=[analyze_btn, generate_btn],
-    )
-    analyze_btn.click(
-        run_analysis,
-        inputs=[pdf_input, target_language_input],
-        outputs=[book_structure_output, ocr_note_output, analyzed_state, chapter_texts_state, chapter_select],
-    )
-    slot_outputs = [
-        c for i in range(MAX_QUESTIONS) for c in (question_groups[i], question_labels[i], question_texts[i])
-    ]
-    generate_btn.click(
-        run_test_generation,
-        inputs=[
-            analyzed_state,
-            chapter_texts_state,
-            chapter_select,
-            week_label_input,
-            instruction_language_input,
-            target_language_input,
-        ],
-        outputs=[test_state, test_header, submit_btn, results_output] + slot_outputs,
-    )
-    submit_btn.click(
-        grade_test,
-        inputs=[test_state] + question_texts,
-        outputs=[results_output],
+    access_code_input.submit(
+        check_access_code,
+        inputs=[access_code_input],
+        outputs=[gate_column, app_column, access_code_error],
     )
 
 if __name__ == "__main__":
@@ -1226,6 +1272,17 @@ if __name__ == "__main__":
         print(
             "[startup] LITORA_CACHE_DATASET_REPO is not set -- every upload will be analyzed fresh "
             "(no book-analysis caching).",
+            file=sys.stderr,
+        )
+
+    access_codes = _parse_access_codes(LITORA_ACCESS_CODES)
+    if access_codes:
+        print(f"[startup] Access-code gate enabled -- {len(access_codes)} valid code(s) configured.", file=sys.stderr)
+    else:
+        print(
+            "[startup] LITORA_ACCESS_CODES is not set -- the access-code gate will reject every code "
+            "entered (nobody gets past the gate screen). Set LITORA_ACCESS_CODES=\"CODE1,CODE2,...\" "
+            "as a Space secret to let people in.",
             file=sys.stderr,
         )
     demo.queue().launch()

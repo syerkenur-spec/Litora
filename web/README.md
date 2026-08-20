@@ -51,6 +51,33 @@ pushed to a Hugging Face Space on its own.
    on later pushes.) Alternatively, upload `app.py`, `requirements.txt`, and
    `README.md` via the Space's web UI.
 
+## Restricting access (in-app access code, no Hugging Face account needed)
+
+By default, a Public Space (or any public URL, on any host) is usable by
+anyone who has the link. To gate it behind a simple access-code screen
+instead — enough to keep it off search engines and out of randoms' hands,
+not meant to stop a determined attacker:
+
+1. Set the Space's (or wherever you deploy it) visibility to **Public**, so
+   the URL itself loads for anyone — the access-code screen is the actual
+   gate, not the platform's own visibility setting.
+2. Add a `LITORA_ACCESS_CODES` secret: a comma-separated list of codes, e.g.
+   `SDU2026,TEACHER-01,TEACHER-02`. Each code is independent — hand one to
+   each teacher/class and revoke it later just by editing this one secret
+   and restarting.
+
+Visiting the app shows a single "Access code" field first; entering a valid
+code reveals the normal upload/analyze/generate-test interface for that
+browser session. Without this secret set (or set to an empty value), the
+gate rejects every code — nobody gets through until you configure at least
+one.
+
+If instead you want access restricted to specific named people who already
+have (or are willing to make) Hugging Face accounts, use a **Private** Space
+and add each person under Settings -> Collaborators instead — no code
+changes needed for that route, but everyone needs to log into huggingface.co
+to view it.
+
 ## Caching analyzed books
 
 By default every upload re-runs OCR and Gemini analysis from scratch, even
