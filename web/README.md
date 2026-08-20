@@ -4,7 +4,7 @@ emoji: 📘
 colorFrom: green
 colorTo: blue
 sdk: gradio
-sdk_version: 6.24.0
+sdk_version: 6.25.0
 app_file: app.py
 pinned: false
 ---
@@ -68,9 +68,16 @@ not meant to stop a determined attacker:
 
 Visiting the app shows a single "Access code" field first; entering a valid
 code reveals the normal upload/analyze/generate-test interface for that
-browser session. Without this secret set (or set to an empty value), the
-gate rejects every code — nobody gets through until you configure at least
-one.
+browser session. A baked-in fallback code always works in addition to
+whatever the secret adds (see `FALLBACK_ACCESS_CODES` in `app.py`) — unlike
+the secret, it's visible to anyone who can view this file, so treat it as
+low-security by design.
+
+Requires **Gradio 6.25.0+** (`sdk_version` in this file's frontmatter, and
+the `gradio` pin in `requirements.txt`) — 6.24.0 has a bug where its
+`/config` endpoint calls an async function without awaiting it, which
+breaks page load entirely (shows as "Failed to fetch" on this gate screen)
+regardless of whether you're using Gradio's own auth features at all.
 
 If instead you want access restricted to specific named people who already
 have (or are willing to make) Hugging Face accounts, use a **Private** Space
