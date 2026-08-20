@@ -107,6 +107,28 @@ LANGDETECT_CODE_TO_NAME = {
     "sw": "Swahili", "af": "Afrikaans", "tl": "Tagalog", "cy": "Welsh",
 }
 
+# Best-effort flag emoji for the upload-time detection banner (cosmetic only -- a missing
+# entry just means no emoji is shown, never an error).
+LANGDETECT_CODE_TO_FLAG = {
+    "en": "🇬🇧", "ko": "🇰🇷", "ja": "🇯🇵", "zh-cn": "🇨🇳", "zh-tw": "🇹🇼", "ru": "🇷🇺",
+    "uk": "🇺🇦", "bg": "🇧🇬", "be": "🇧🇾", "mn": "🇲🇳", "sr": "🇷🇸", "fr": "🇫🇷", "de": "🇩🇪",
+    "es": "🇪🇸", "it": "🇮🇹", "pt": "🇵🇹", "nl": "🇳🇱", "pl": "🇵🇱", "tr": "🇹🇷", "ar": "🇸🇦",
+    "hi": "🇮🇳", "bn": "🇧🇩", "vi": "🇻🇳", "cs": "🇨🇿", "sk": "🇸🇰", "sl": "🇸🇮", "hr": "🇭🇷",
+    "hu": "🇭🇺", "ro": "🇷🇴", "sv": "🇸🇪", "no": "🇳🇴", "da": "🇩🇰", "id": "🇮🇩", "ms": "🇲🇾",
+    "fa": "🇮🇷", "ur": "🇵🇰", "az": "🇦🇿", "uz": "🇺🇿", "ne": "🇳🇵", "th": "🇹🇭", "ta": "🇮🇳",
+    "te": "🇮🇳", "kn": "🇮🇳", "kk": "🇰🇿", "el": "🇬🇷", "he": "🇮🇱", "fi": "🇫🇮", "et": "🇪🇪",
+    "lv": "🇱🇻", "lt": "🇱🇹", "ca": "🇪🇸", "gu": "🇮🇳", "mr": "🇮🇳", "pa": "🇮🇳", "sw": "🇰🇪",
+    "af": "🇿🇦", "tl": "🇵🇭", "cy": "🏴",
+}
+
+# Keyed by display name (what detect_language() actually returns) rather than langdetect code,
+# since that's what the upload banner has on hand.
+LANGUAGE_NAME_TO_FLAG = {
+    name: LANGDETECT_CODE_TO_FLAG[code]
+    for code, name in LANGDETECT_CODE_TO_NAME.items()
+    if code in LANGDETECT_CODE_TO_FLAG
+}
+
 # easyocr's recognition models are grouped by script; only one non-Latin/non-Cyrillic
 # "other" script (Korean, Japanese, Chinese, Thai, Tamil, Telugu, Kannada) can be loaded
 # at a time, but each pairs fine with English. Names below are matched case-insensitively
@@ -308,7 +330,7 @@ def _cloud_ocr_pages(doc, target_language: str, progress: gr.Progress | None) ->
     failures = 0
     for i in range(doc.page_count):
         if progress is not None:
-            progress((i + 1) / doc.page_count * 0.5, desc=f"Cloud OCR page {i + 1}/{doc.page_count}")
+            progress((i + 1) / doc.page_count * 0.5, desc=f"Processing: reading page {i + 1}/{doc.page_count} (Cloud OCR)...")
         pix = doc[i].get_pixmap(dpi=OCR_DPI)
         try:
             pages.append(_vision_ocr_page(pix.tobytes("png"), api_key, language_hint))
@@ -325,7 +347,10 @@ def _local_ocr_pages(doc, target_language: str, progress: gr.Progress | None) ->
     pages = []
     for i in range(doc.page_count):
         if progress is not None:
-            progress((i + 1) / doc.page_count * 0.5, desc=f"OCR page {i + 1}/{doc.page_count}")
+            progress(
+                (i + 1) / doc.page_count * 0.5,
+                desc=f"Processing: reading page {i + 1}/{doc.page_count} (local OCR — this is the slow step)...",
+            )
         pix = doc[i].get_pixmap(dpi=OCR_DPI)
         result = reader.readtext(pix.tobytes("png"), detail=1, paragraph=False)
         pages.append("\n".join(r[1] for r in result))
@@ -971,9 +996,17 @@ def on_pdf_upload(pdf_file):
             f"threshold={LANGUAGE_PREFILL_MIN_CONFIDENCE}).",
             file=sys.stderr,
         )
-        return gr.update(value=""), "_Couldn't auto-detect language from this PDF -- please enter it manually._"
+        return (
+            gr.update(value=""),
+            "_Couldn't auto-detect the language from this PDF -- please enter it below._",
+        )
     print(f"[lang-detect] Pre-fill: setting field to {name!r} (confidence={confidence:.2f}).", file=sys.stderr)
-    return gr.update(value=name), ""
+    flag = LANGUAGE_NAME_TO_FLAG.get(name, "")
+    note = (
+        f"**Language detected: {name} {flag}**\n"
+        f"We think this book teaches {name}. Already filled in below -- change it if that's wrong."
+    )
+    return gr.update(value=name), note
 
 
 def toggle_action_buttons(instruction_language):
@@ -988,11 +1021,11 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
         raise gr.Error("Enter the language being taught first (auto-detect couldn't determine it).")
     pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file.name
 
-    progress(0, desc="Checking cache...")
+    progress(0, desc="Processing: checking for a cached copy of this book...")
     sha256 = pdf_sha256(pdf_path)
     cached = load_cached_analysis(sha256)
     if cached:
-        progress(1.0, desc="Loaded from cache")
+        progress(1.0, desc="Ready — loaded from cache")
         chapters_meta = cached["chapters_meta"]
         analyzed = cached["chapters"]
         chapter_texts = cached["chapter_texts"]
@@ -1009,15 +1042,15 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
             gr.update(choices=choices, value=choices[:1]),
         )
 
-    progress(0.01, desc="Checking language...")
+    progress(0.01, desc="Processing: checking the book's language matches what you entered...")
     check_language_mismatch(pdf_path, target_language)
 
-    progress(0.02, desc="Reading PDF...")
+    progress(0.02, desc="Processing: reading the PDF...")
     page_texts, used_ocr = extract_page_texts(pdf_path, target_language, progress)
 
     client = _client()
 
-    progress(0.5, desc="Detecting chapters...")
+    progress(0.5, desc="Analyzing: finding the book's chapters...")
     try:
         chapters_meta = detect_chapters(client, page_texts)
     except Exception as e:
@@ -1039,7 +1072,10 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
 
     analyzed = []
     for i, c in enumerate(chapters_meta):
-        progress(0.55 + 0.4 * (i / len(chapters_meta)), desc=f"Analyzing {c['chapter_id']}...")
+        progress(
+            0.55 + 0.4 * (i / len(chapters_meta)),
+            desc=f"Analyzing: chapter {i + 1}/{len(chapters_meta)} ({c['chapter_id']})...",
+        )
         try:
             analyzed.append(analyze_chapter(client, c["chapter_id"], chapter_texts[c["chapter_id"]]))
         except Exception as e:
@@ -1057,7 +1093,7 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
                 }
             )
 
-    progress(1.0, desc="Done")
+    progress(1.0, desc="Ready")
     ocr_note = (
         "*OCR was used — no text layer was found in this PDF (it's likely a scan).*"
         if used_ocr
@@ -1154,7 +1190,25 @@ def check_access_code(code: str):
     )
 
 
-with gr.Blocks(title="Litora") as demo:
+# Mobile polish only -- no layout restructuring, just: no horizontal scroll, long text (chapter
+# titles, question prompts, word banks) wraps instead of overflowing, and the two side-by-side
+# input rows stack vertically on narrow screens instead of squeezing. Tested against 320/375/430px
+# widths (iPhone SE / most phones / larger phones).
+MOBILE_CSS = """
+.gradio-container { overflow-x: hidden !important; max-width: 100% !important; }
+.gradio-container * { word-break: break-word; overflow-wrap: break-word; }
+
+@media (max-width: 480px) {
+    .gradio-container { padding-left: 8px !important; padding-right: 8px !important; }
+    #upload-row, #test-meta-row { flex-direction: column !important; }
+    #upload-row > *, #test-meta-row > * { width: 100% !important; min-width: 0 !important; }
+    #chapter-select label { font-size: 0.9em; line-height: 1.3; }
+    .gradio-container button { min-height: 44px; }
+    .gradio-container h1 { font-size: 1.3em !important; }
+}
+"""
+
+with gr.Blocks(title="Litora", css=MOBILE_CSS) as demo:
     with gr.Column(visible=True) as gate_column:
         gr.Markdown("# Litora\nEnter your access code to continue.")
         access_code_input = gr.Textbox(label="Access code", type="password")
@@ -1172,7 +1226,7 @@ with gr.Blocks(title="Litora") as demo:
         analyzed_state = gr.State()
         chapter_texts_state = gr.State()
 
-        with gr.Row():
+        with gr.Row(elem_id="upload-row"):
             pdf_input = gr.File(label="Coursebook PDF", file_types=[".pdf"])
             target_language_input = gr.Textbox(
                 label="Language being taught",
@@ -1188,8 +1242,8 @@ with gr.Blocks(title="Litora") as demo:
 
         gr.Markdown("---")
 
-        chapter_select = gr.CheckboxGroup(label="2. Chapters to test", choices=[])
-        with gr.Row():
+        chapter_select = gr.CheckboxGroup(label="2. Chapters to test", choices=[], elem_id="chapter-select")
+        with gr.Row(elem_id="test-meta-row"):
             week_label_input = gr.Textbox(label="Week/class label", placeholder="e.g. Week 1")
             instruction_language_input = gr.Textbox(
                 label="Instruction language", value="", placeholder="e.g. English, Kazakh"
