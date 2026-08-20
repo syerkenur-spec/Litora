@@ -79,6 +79,16 @@ the `gradio` pin in `requirements.txt`) — 6.24.0 has a bug where its
 breaks page load entirely (shows as "Failed to fetch" on this gate screen)
 regardless of whether you're using Gradio's own auth features at all.
 
+**If you're using a Custom Domain (Settings -> Custom Domain) instead of
+the default `*.hf.space` URL:** also set a `GRADIO_ROOT_PATH` Variable
+(Settings -> Variables, no need for a Secret) to your domain's full HTTPS
+URL, e.g. `https://litora.space`. Without it, Gradio can misdetect its own
+scheme as `http://` behind the domain proxy and try to load `/config` and
+`theme.css` over plain HTTP — browsers block that as mixed content on an
+HTTPS page, which looks exactly like this gate screen being frozen
+(nothing responds to typing/clicking) even though the app loads fine on
+the raw `*.hf.space` URL.
+
 If instead you want access restricted to specific named people who already
 have (or are willing to make) Hugging Face accounts, use a **Private** Space
 and add each person under Settings -> Collaborators instead — no code
