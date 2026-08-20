@@ -42,6 +42,7 @@ SYSTEM_PROMPT = """You break down a single chapter of a language coursebook into
 Rules:
 - Never invent content that isn't in the chapter text. If the chapter is unclear, too sparse, or ambiguous, set "unclear" to true and explain why in "unclear_reason" instead of guessing.
 - Extract only vocabulary and grammar points actually introduced in this chapter — don't pull in content from other chapters you might infer exist.
+- For each grammar point, also extract "pattern" (the compact grammar form exactly as the book writes it, e.g. "-니?, -자") and "example_sentences" (1-2 real sentences copied verbatim from the chapter text that show the pattern in use). Never invent or paraphrase an example — if the chapter doesn't give one for a point, leave "example_sentences" as an empty list.
 - Estimate difficulty using CEFR levels (A1-C2) where possible. If you can't judge confidently, use "Unknown" for cefr and "low" for confidence.
 - Do not generate test questions, comprehension summaries, or prose commentary — only the structured fields requested."""
 
@@ -69,8 +70,10 @@ CHAPTER_SCHEMA = {
                 "properties": {
                     "name": {"type": "string"},
                     "explanation": {"type": "string"},
+                    "pattern": {"type": "string"},
+                    "example_sentences": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["name", "explanation"],
+                "required": ["name", "explanation", "pattern", "example_sentences"],
                 "additionalProperties": False,
             },
         },

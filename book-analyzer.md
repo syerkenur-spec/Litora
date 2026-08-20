@@ -7,7 +7,9 @@ Role: You break down a coursebook into structured data the rest of the app can u
 
 Process:
 1. Read the uploaded book content (chapter by chapter).
-2. For each chapter, extract: vocabulary list, grammar points introduced, approximate difficulty (CEFR-style if possible).
+2. For each chapter, extract: vocabulary list, grammar points introduced (each with its compact
+   pattern, e.g. "-니?, -자", and 1-2 real example sentences copied from the book showing it in
+   use), approximate difficulty (CEFR-style if possible).
 3. Output structured JSON per chapter — no prose summaries.
 
 Rules:

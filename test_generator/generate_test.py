@@ -38,18 +38,25 @@ MODEL = "gemini-flash-lite-latest"
 RETRY_ATTEMPTS = 5
 RETRY_BASE_DELAY = 5  # seconds; doubles each attempt
 
-SYSTEM_PROMPT_TEMPLATE = """You turn a set of already-analyzed coursebook chapters into a short test for the class that just covered them. The material being taught is {target_language} — treat its vocabulary and grammar structures as data from the chapters given, not hardcoded rules for any one language.
+SYSTEM_PROMPT_TEMPLATE = """You turn a set of already-analyzed coursebook chapters into a short test for the class that just covered them, modeled on how this book itself drills material — never generic "pick the matching phrase" multiple choice. The material being taught is {target_language} — treat its vocabulary and grammar structures as data from the chapters given, not hardcoded rules for any one language.
+
+Every question must be one of these three types, matching how real coursebooks drill material:
+- "dialogue_completion": a short two-line exchange. Give speaker 가's line (plus enough situational context to make the reply unambiguous) in {target_language}, and the student writes speaker 나's response using the chapter's target grammar pattern, correctly conjugated/inflected for the context and formality level shown in the book. Put 가's line and any setup in "prompt", ending with the blank to fill (e.g. "나: ___", or the book's own dialogue-tag convention). "answer" is the one defensible correct 나-line.
+- "word_bank_completion": pick ~5 target vocabulary words from the chapter (adjectives/verbs in their dictionary/base form) as "word_bank", then write 1-3 short context sentences or a short dialogue in "prompt" with a blank the student fills by choosing the right word from the bank AND inflecting/conjugating it correctly for that sentence. "answer" is the correctly conjugated word actually filled in.
+- "guided_response": an open-ended production exercise — state a topic/situation in "prompt", and if the chapter's source text or example_sentences show one, a model dialogue/sentence pattern to follow. The student produces their own original response using the chapter's grammar pattern; there is no single correct answer, so "answer" holds one reasonable sample response for the teacher's reference, not something to be graded by exact match.
 
 Rules:
 - Match question difficulty to the chapters' own CEFR level and content — never default to a generic "intermediate" difficulty.
 - Only test vocabulary and grammar points that are actually present in the given chapter data. Never invent new vocabulary, grammar rules, or examples.
-- Vary question types across multiple_choice, fill_in_blank, and short_answer unless the user asks for a single type.
+- Ground every dialogue_completion and guided_response in the chapter's own grammar_points "pattern" and "example_sentences" where given — model the new dialogue/sentence on how the book's own examples actually use the pattern (register, sentence shape, typical subjects), rather than inventing an unrelated scenario.
+- word_bank_completion's word bank must be drawn from the chapter's own "vocabulary" list, and the blank's correct answer must require real inflection/conjugation (not just the bare dictionary form) whenever the target language's grammar makes that possible.
+- Vary which of the three types is used across the test and across chapters/topics rather than repeating one type throughout; use guided_response sparingly (a small minority of the test) since it can't be auto-graded by exact match.
+- Every dialogue_completion and word_bank_completion question must be answerable with confidence from its own prompt text alone, with exactly one defensible correct answer. Book sentences often depend on context you don't have here (a photo, a matching list, an earlier line naming who "she" is) to be unambiguous — if reusing one of those, either add enough context into the prompt itself to make the answer unique, or don't use that sentence. Never leave a blank where a different word than the intended answer would also be correct (e.g. "Laura's ___ is orange" with no way to know it's specifically her book and not her pen; "The blue book is ___" with no way to know whose it is).
+- Hold this same standard of quality and book-grounding for every question, not just the first few — do not let later questions get more generic or less carefully checked than earlier ones.
 - Keep the test short enough for weekly/daily classroom use ({question_count_guidance}) — this is not a final exam.
 - Every question's "specific_topic" must name the exact grammar point (matching a "name" from the chapter's grammar_points) or vocabulary theme it tests — never just the broad "vocabulary"/"grammar" category. This is what lets per-topic understanding be tracked later, not just a raw score.
-- Every question must be answerable with confidence from its own prompt text alone, with exactly one defensible correct answer. Book sentences often depend on context you don't have here (a photo, a matching list, an earlier line naming who "she" is) to be unambiguous — if reusing one of those, either add enough context into the prompt itself to make the answer unique, or don't use that sentence. Never leave a blank where a different word than the intended answer would also be correct (e.g. "Laura's ___ is orange" with no way to know it's specifically her book and not her pen; "The blue book is ___" with no way to know whose it is).
-- Hold this same standard of quality and book-grounding for every question, not just the first few — do not let later questions get more generic or less carefully checked than earlier ones.
+- Set "word_bank" to a non-empty list of ~5 words only for word_bank_completion questions; leave it as an empty list for dialogue_completion and guided_response.
 - Do not grade answers or produce a comprehension report — only produce the test and its answer key.
-- For multiple_choice questions, provide exactly 4 plausible choices in "choices" with one correct "answer" matching one of them exactly. For fill_in_blank and short_answer questions, set "choices" to an empty list.
 - {instruction_language_rule}
 - {source_text_rule}"""
 
@@ -58,12 +65,11 @@ def _instruction_language_rule(instruction_language: str, target_language: str) 
     if instruction_language.strip().lower() == target_language.strip().lower():
         return f'Write every question\'s "prompt" in {target_language}.'
     return (
-        f'Write every question\'s "prompt" (the instruction/question text) in {instruction_language}, '
+        f'Write every question\'s "prompt" (the instruction/setup text) in {instruction_language}, '
         f"since the learner may not understand grammatical terms in {target_language}, the language being taught. "
-        f'The actual target-language material being tested — vocabulary words, "choices", and the correct '
+        f'The actual target-language material being tested — dialogue lines, "word_bank" entries, and the correct '
         f'"answer" — must stay in {target_language} (the language of the coursebook), never translated into {instruction_language}. '
-        'Only the surrounding instruction text changes language, e.g. prompt: '
-        f'"{{sentence in {instruction_language}}}: ___" with choices still in {target_language}.'
+        "Only the surrounding instruction text changes language."
     )
 
 
@@ -107,13 +113,13 @@ TEST_SCHEMA = {
                     "id": {"type": "string"},
                     "type": {
                         "type": "string",
-                        "enum": ["multiple_choice", "fill_in_blank", "short_answer"],
+                        "enum": ["dialogue_completion", "word_bank_completion", "guided_response"],
                     },
                     "topic": {"type": "string", "enum": ["vocabulary", "grammar"]},
                     "specific_topic": {"type": "string"},
                     "source_chapter_id": {"type": "string"},
                     "prompt": {"type": "string"},
-                    "choices": {"type": "array", "items": {"type": "string"}},
+                    "word_bank": {"type": "array", "items": {"type": "string"}},
                     "answer": {"type": "string"},
                 },
                 "required": [
@@ -123,7 +129,7 @@ TEST_SCHEMA = {
                     "specific_topic",
                     "source_chapter_id",
                     "prompt",
-                    "choices",
+                    "word_bank",
                     "answer",
                 ],
                 "additionalProperties": False,

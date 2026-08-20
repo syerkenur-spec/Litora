@@ -12,14 +12,23 @@ than importing them) so this deploys as a single Hugging Face Space without
 needing the rest of the repo.
 
 Requires GEMINI_API_KEY set as a Space secret (Settings -> Repository secrets).
+
+Optional caching: if LITORA_CACHE_DATASET_REPO (e.g. "yourname/litora-book-cache") is set,
+already-analyzed books are cached by PDF SHA-256 in that private Hugging Face Hub dataset repo,
+so a re-upload of the same PDF skips OCR and Gemini analysis entirely. This also requires an
+HF_TOKEN Space secret with write access to that repo (Spaces don't get a write-capable token by
+default) -- without both set, caching is silently skipped and every upload is analyzed fresh.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import fitz  # pymupdf
 import gradio as gr
@@ -27,6 +36,7 @@ import langdetect
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors, types
+from huggingface_hub import HfApi, hf_hub_download
 
 load_dotenv()
 
@@ -38,6 +48,9 @@ OCR_DPI = 200
 NATIVE_TEXT_THRESHOLD = 20  # avg chars/page below this triggers OCR fallback
 PAGE_SNIPPET_CHARS = 220
 MIN_CONTENT_ITEMS = 3
+
+CACHE_DATASET_REPO = os.environ.get("LITORA_CACHE_DATASET_REPO")  # e.g. "yourname/litora-book-cache";
+# unset (default) disables the analyzed-book cache entirely.
 
 LANGDETECT_MIN_CHARS = 100  # langdetect can be confidently WRONG on shorter samples, not just
 # unsure -- confirmed on a real book: a 63-char correctly-OCR'd Korean sample got misclassified
@@ -136,6 +149,82 @@ def _generate_with_retry(client: genai.Client, **kwargs):
                 raise
             time.sleep(delay)
             delay *= 2
+
+
+# ---------- Stage 0: analyzed-book cache ----------
+#
+# Keyed by SHA-256 of the uploaded PDF, stored as one JSON file per book in a private Hugging
+# Face Hub dataset repo (CACHE_DATASET_REPO). This survives Space restarts/rebuilds/sleep-wake
+# without needing the paid Persistent Storage add-on, since it lives outside the Space's own
+# (ephemeral) container filesystem. A cache miss, a missing HF_TOKEN, or any Hub error is treated
+# as "not cached" -- caching is a pure optimization and must never block or fail an analysis run.
+
+_cache_repo_ready = False
+
+
+def _hf_token() -> str | None:
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+
+
+def _cache_filename(sha256: str) -> str:
+    return f"book-cache/{sha256}.json"
+
+
+def pdf_sha256(pdf_path: str) -> str:
+    digest = hashlib.sha256()
+    with open(pdf_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_cached_analysis(sha256: str) -> dict | None:
+    if not CACHE_DATASET_REPO:
+        return None
+    try:
+        local_path = hf_hub_download(
+            repo_id=CACHE_DATASET_REPO,
+            repo_type="dataset",
+            filename=_cache_filename(sha256),
+            token=_hf_token(),
+        )
+        return json.loads(Path(local_path).read_text(encoding="utf-8"))
+    except Exception as e:
+        print(
+            f"[cache] No usable cached analysis for {sha256[:12]}... ({e.__class__.__name__}: {e}) "
+            "-- analyzing fresh.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def save_cached_analysis(sha256: str, payload: dict) -> None:
+    global _cache_repo_ready
+    if not CACHE_DATASET_REPO:
+        return
+    token = _hf_token()
+    if not token:
+        print(
+            "[cache] LITORA_CACHE_DATASET_REPO is set but no HF_TOKEN/HUGGINGFACE_TOKEN secret was found "
+            "-- skipping cache write for this run.",
+            file=sys.stderr,
+        )
+        return
+    api = HfApi(token=token)
+    try:
+        if not _cache_repo_ready:
+            api.create_repo(repo_id=CACHE_DATASET_REPO, repo_type="dataset", private=True, exist_ok=True)
+            _cache_repo_ready = True
+        api.upload_file(
+            path_or_fileobj=json.dumps(payload, indent=2).encode("utf-8"),
+            path_in_repo=_cache_filename(sha256),
+            repo_id=CACHE_DATASET_REPO,
+            repo_type="dataset",
+            commit_message=f"Cache analysis for {sha256[:12]}",
+        )
+        print(f"[cache] Saved analysis for {sha256[:12]}... to {CACHE_DATASET_REPO}.", file=sys.stderr)
+    except Exception as e:
+        print(f"[cache] Failed to save cached analysis ({e!r}) -- continuing without caching this run.", file=sys.stderr)
 
 
 # ---------- Stage 1: text extraction ----------
@@ -539,6 +628,7 @@ ANALYZE_SYSTEM_PROMPT = """You break down a single chapter of a language courseb
 Rules:
 - Never invent content that isn't in the chapter text. If the chapter is unclear, too sparse, or ambiguous, set "unclear" to true and explain why in "unclear_reason" instead of guessing.
 - Extract only vocabulary and grammar points actually introduced in this chapter -- don't pull in content from other chapters you might infer exist.
+- For each grammar point, also extract "pattern" (the compact grammar form exactly as the book writes it, e.g. "-니?, -자") and "example_sentences" (1-2 real sentences copied verbatim from the chapter text that show the pattern in use). Never invent or paraphrase an example -- if the chapter doesn't give one for a point, leave "example_sentences" as an empty list.
 - Estimate difficulty using CEFR levels (A1-C2) where possible. If you can't judge confidently, use "Unknown" for cefr and "low" for confidence.
 - Do not generate test questions, comprehension summaries, or prose commentary -- only the structured fields requested."""
 
@@ -566,8 +656,10 @@ CHAPTER_SCHEMA = {
                 "properties": {
                     "name": {"type": "string"},
                     "explanation": {"type": "string"},
+                    "pattern": {"type": "string"},
+                    "example_sentences": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["name", "explanation"],
+                "required": ["name", "explanation", "pattern", "example_sentences"],
                 "additionalProperties": False,
             },
         },
@@ -607,20 +699,26 @@ def analyze_chapter(client: genai.Client, chapter_id: str, text: str) -> dict:
 
 # ---------- Stage 4: test-generator ----------
 
-TEST_SYSTEM_PROMPT_TEMPLATE = """You turn a set of already-analyzed coursebook chapters into a short test for the class that just covered them. The material being taught is {target_language} -- treat its vocabulary and grammar structures as data from the chapters given, not hardcoded rules for any one language.
+TEST_SYSTEM_PROMPT_TEMPLATE = """You turn a set of already-analyzed coursebook chapters into a short test for the class that just covered them, modeled on how this book itself drills material -- never generic "pick the matching phrase" multiple choice. The material being taught is {target_language} -- treat its vocabulary and grammar structures as data from the chapters given, not hardcoded rules for any one language.
+
+Every question must be one of these three types, matching how real coursebooks drill material:
+- "dialogue_completion": a short two-line exchange. Give speaker 가's line (plus enough situational context to make the reply unambiguous) in {target_language}, and the student writes speaker 나's response using the chapter's target grammar pattern, correctly conjugated/inflected for the context and formality level shown in the book. Put 가's line and any setup in "prompt", ending with the blank to fill (e.g. "나: ___", or the book's own dialogue-tag convention). "answer" is the one defensible correct 나-line.
+- "word_bank_completion": pick ~5 target vocabulary words from the chapter (adjectives/verbs in their dictionary/base form) as "word_bank", then write 1-3 short context sentences or a short dialogue in "prompt" with a blank the student fills by choosing the right word from the bank AND inflecting/conjugating it correctly for that sentence. "answer" is the correctly conjugated word actually filled in.
+- "guided_response": an open-ended production exercise -- state a topic/situation in "prompt", and if the chapter's source text or example_sentences show one, a model dialogue/sentence pattern to follow. The student produces their own original response using the chapter's grammar pattern; there is no single correct answer, so "answer" holds one reasonable sample response for the teacher's reference, not something to be graded by exact match.
 
 Rules:
 - Match question difficulty to the chapters' own CEFR level and content -- never default to a generic "intermediate" difficulty.
 - Only test vocabulary and grammar points that are actually present in the given chapter data. Never invent new vocabulary, grammar rules, or examples.
-- Test real understanding of meaning, usage, and how a grammar point actually functions -- not rote recognition or matching a term to its dictionary definition. Prefer asking the student to complete, produce, or apply the language point in a realistic sentence over asking them to just identify which option "means X". A student who has only memorized a word list, without understanding how to use it, should not be able to pass.
-- Vary question types across multiple_choice, fill_in_blank, and short_answer unless the user asks for a single type. Favor fill_in_blank and short_answer for grammar points specifically, since producing the correct form tests understanding more directly than recognizing it among choices.
-- For multiple_choice questions, all wrong choices must be plausible distractors that require real understanding to eliminate (e.g. other vocabulary/grammar from the same chapters, a common learner confusion, a near-miss grammatical form) -- never near-duplicates of the correct choice (minor spelling variants, the same phrase reordered, or options differing by one letter) that a student could eliminate by pattern-matching without understanding the material.
+- Test real understanding of meaning, usage, and how a grammar point actually functions -- not rote recognition. A student who has only memorized a word list, without understanding how to use it, should not be able to pass.
+- Ground every dialogue_completion and guided_response in the chapter's own grammar_points "pattern" and "example_sentences" where given -- model the new dialogue/sentence on how the book's own examples actually use the pattern (register, sentence shape, typical subjects), rather than inventing an unrelated scenario.
+- word_bank_completion's word bank must be drawn from the chapter's own "vocabulary" list, and the blank's correct answer must require real inflection/conjugation (not just the bare dictionary form) whenever the target language's grammar makes that possible.
+- Vary which of the three types is used across the test and across chapters/topics rather than repeating one type throughout; use guided_response sparingly (a small minority of the test) since it can't be auto-graded by exact match.
+- Every dialogue_completion and word_bank_completion question must be answerable with confidence from its own prompt text alone, with exactly one defensible correct answer. Book sentences often depend on context you don't have here (a photo, a matching list, an earlier line naming who "she" is) to be unambiguous -- if reusing one of those, either add enough context into the prompt itself to make the answer unique, or don't use that sentence. Never leave a blank where a different word than the intended answer would also be correct.
+- Hold this same standard of quality and book-grounding for every question, not just the first few -- do not let later questions get more generic or less carefully checked than earlier ones.
 - Keep the test short enough for weekly/daily classroom use ({question_count_guidance}) -- this is not a final exam.
 - Every question's "specific_topic" must name the exact grammar point (matching a "name" from the chapter's grammar_points) or vocabulary theme it tests -- never just the broad "vocabulary"/"grammar" category.
-- Every question must be answerable with confidence from its own prompt text alone, with exactly one defensible correct answer. Book sentences often depend on context you don't have here (a photo, a matching list, an earlier line naming who "she" is) to be unambiguous -- if reusing one of those, either add enough context into the prompt itself to make the answer unique, or don't use that sentence. Never leave a blank where a different word than the intended answer would also be correct.
-- Hold this same standard of quality and book-grounding for every question, not just the first few -- do not let later questions get more generic or less carefully checked than earlier ones.
+- Set "word_bank" to a non-empty list of ~5 words only for word_bank_completion questions; leave it as an empty list for dialogue_completion and guided_response.
 - Do not grade answers or produce a comprehension report -- only produce the test and its answer key.
-- For multiple_choice questions, provide exactly 4 plausible choices in "choices" with one correct "answer" matching one of them exactly. For fill_in_blank and short_answer questions, set "choices" to an empty list.
 - {instruction_language_rule}
 - {source_text_rule}"""
 
@@ -634,12 +732,15 @@ TEST_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "type": {"type": "string", "enum": ["multiple_choice", "fill_in_blank", "short_answer"]},
+                    "type": {
+                        "type": "string",
+                        "enum": ["dialogue_completion", "word_bank_completion", "guided_response"],
+                    },
                     "topic": {"type": "string", "enum": ["vocabulary", "grammar"]},
                     "specific_topic": {"type": "string"},
                     "source_chapter_id": {"type": "string"},
                     "prompt": {"type": "string"},
-                    "choices": {"type": "array", "items": {"type": "string"}},
+                    "word_bank": {"type": "array", "items": {"type": "string"}},
                     "answer": {"type": "string"},
                 },
                 "required": [
@@ -649,7 +750,7 @@ TEST_SCHEMA = {
                     "specific_topic",
                     "source_chapter_id",
                     "prompt",
-                    "choices",
+                    "word_bank",
                     "answer",
                 ],
                 "additionalProperties": False,
@@ -665,9 +766,9 @@ def _instruction_language_rule(instruction_language: str, target_language: str) 
     if instruction_language.strip().lower() == target_language.strip().lower():
         return f'Write every question\'s "prompt" in {target_language}.'
     return (
-        f'Write every question\'s "prompt" (the instruction/question text) in {instruction_language}, '
+        f'Write every question\'s "prompt" (the instruction/setup text) in {instruction_language}, '
         f"since the learner may not understand grammatical terms in {target_language}, the language being taught. "
-        f'The actual target-language material being tested -- vocabulary words, "choices", and the correct '
+        f'The actual target-language material being tested -- dialogue lines, "word_bank" entries, and the correct '
         f'"answer" -- must stay in {target_language} (the language of the coursebook), never translated into '
         f"{instruction_language}."
     )
@@ -752,7 +853,10 @@ def format_book_structure(chapters: list[dict]) -> str:
         lines.append(f"### {c['chapter_id']} — {c['chapter_title']}{flag}")
         lines.append(f"CEFR: {c['difficulty']['cefr']} ({c['difficulty']['confidence']} confidence)")
         lines.append(f"**Vocabulary** ({len(c['vocabulary'])}): " + ", ".join(v["term"] for v in c["vocabulary"]))
-        lines.append(f"**Grammar** ({len(c['grammar_points'])}): " + ", ".join(g["name"] for g in c["grammar_points"]))
+        grammar_labels = [
+            f"{g['name']} ({g['pattern']})" if g.get("pattern") else g["name"] for g in c["grammar_points"]
+        ]
+        lines.append(f"**Grammar** ({len(c['grammar_points'])}): " + ", ".join(grammar_labels))
         lines.append("")
     return "\n".join(lines)
 
@@ -763,50 +867,50 @@ MAX_QUESTIONS = 30  # Gradio needs a fixed set of components pre-allocated; this
 
 
 def _blank_question_updates() -> tuple:
-    """gr.update() tuple for one hidden, empty question slot: (group, label, radio, textbox)."""
+    """gr.update() tuple for one hidden, empty question slot: (group, label, textbox)."""
     return (
         gr.update(visible=False),
         gr.update(value=""),
-        gr.update(visible=False, choices=[], value=None),
         gr.update(visible=False, value=""),
     )
 
 
 def _question_slot_updates(q: dict) -> tuple:
-    """gr.update() tuple for one populated, visible question slot: (group, label, radio, textbox)."""
-    label = f"**{q['id']}** — _{q['topic']}: {q['specific_topic']}_ ({q['type']})\n\n{q['prompt']}"
-    if q["type"] == "multiple_choice":
-        return (
-            gr.update(visible=True),
-            gr.update(value=label),
-            gr.update(visible=True, choices=q["choices"], value=None),
-            gr.update(visible=False, value=""),
-        )
+    """gr.update() tuple for one populated, visible question slot: (group, label, textbox)."""
+    label = f"**{q['id']}** — _{q['topic']}: {q['specific_topic']}_ ({q['type']})\n\n"
+    if q.get("word_bank"):
+        label += f"Word bank: {', '.join(q['word_bank'])}\n\n"
+    label += q["prompt"]
     return (
         gr.update(visible=True),
         gr.update(value=label),
-        gr.update(visible=False, choices=[], value=None),
         gr.update(visible=True, value=""),
     )
 
 
-def grade_test(test: dict, *args):
+def grade_test(test: dict, *text_vals):
     """Grades submitted answers against test["answer"] -- case-insensitive, whitespace-trimmed
-    exact match. Returns a single update for the results block (score + per-question
-    correct/incorrect + correct answers for misses), which is the only place the answer key
-    is ever shown -- it's never rendered before this runs."""
+    exact match -- for dialogue_completion/word_bank_completion. guided_response has no single
+    correct answer, so it's never marked right/wrong: the student's response and a sample answer
+    are shown side by side for self-check instead, and it's excluded from the score fraction.
+    Returns a single update for the results block, which is the only place the answer key is
+    ever shown -- it's never rendered before this runs."""
     if not test:
         raise gr.Error("Generate a test first.")
     questions = test["questions"]
-    n = len(questions)
-    radio_vals = args[:MAX_QUESTIONS]
-    text_vals = args[MAX_QUESTIONS:]
 
     correct_count = 0
+    graded_count = 0
     lines = []
     for i, q in enumerate(questions):
-        submitted = radio_vals[i] if q["type"] == "multiple_choice" else text_vals[i]
-        submitted_norm = (submitted or "").strip()
+        submitted_norm = (text_vals[i] or "").strip()
+        if q["type"] == "guided_response":
+            lines.append(
+                f"📝 **{q['id']}** — your answer: {submitted_norm or '_(no answer)_'}\n"
+                f"   _Sample response (many valid answers exist):_ {q['answer'].strip()}"
+            )
+            continue
+        graded_count += 1
         correct_norm = q["answer"].strip()
         is_correct = submitted_norm.lower() == correct_norm.lower()
         if is_correct:
@@ -818,7 +922,10 @@ def grade_test(test: dict, *args):
                 f"— correct answer: **{correct_norm}**"
             )
 
-    header = f"## Results: {correct_count}/{n} correct\n\n"
+    footnote = ""
+    if graded_count < len(questions):
+        footnote = f" (+{len(questions) - graded_count} guided-response question(s) for self-check, not scored)"
+    header = f"## Results: {correct_count}/{graded_count} correct{footnote}\n\n"
     return gr.update(visible=True, value=header + "\n\n".join(lines))
 
 
@@ -861,7 +968,28 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
         raise gr.Error("Enter the language being taught first (auto-detect couldn't determine it).")
     pdf_path = pdf_file if isinstance(pdf_file, str) else pdf_file.name
 
-    progress(0, desc="Checking language...")
+    progress(0, desc="Checking cache...")
+    sha256 = pdf_sha256(pdf_path)
+    cached = load_cached_analysis(sha256)
+    if cached:
+        progress(1.0, desc="Loaded from cache")
+        chapters_meta = cached["chapters_meta"]
+        analyzed = cached["chapters"]
+        chapter_texts = cached["chapter_texts"]
+        ocr_note = (
+            f"*Loaded from cache — this exact PDF (SHA-256 `{sha256[:12]}…`) was already analyzed on "
+            f"{cached.get('cached_at', 'a previous run')}; OCR and Gemini analysis were skipped.*"
+        )
+        choices = [f"{c['chapter_id']} — {c['title']}" for c in chapters_meta]
+        return (
+            format_book_structure(analyzed),
+            ocr_note,
+            analyzed,
+            chapter_texts,
+            gr.update(choices=choices, value=choices[:1]),
+        )
+
+    progress(0.01, desc="Checking language...")
     check_language_mismatch(pdf_path, target_language)
 
     progress(0.02, desc="Reading PDF...")
@@ -916,6 +1044,18 @@ def run_analysis(pdf_file, target_language, progress=gr.Progress()):
         else "*Text was read directly from the PDF — no OCR needed.*"
     )
     choices = [f"{c['chapter_id']} — {c['title']}" for c in chapters_meta]
+
+    save_cached_analysis(
+        sha256,
+        {
+            "chapters_meta": chapters_meta,
+            "chapters": analyzed,
+            "chapter_texts": chapter_texts,
+            "used_ocr": used_ocr,
+            "target_language": target_language,
+            "cached_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
     return (
         format_book_structure(analyzed),
@@ -1016,15 +1156,13 @@ with gr.Blocks(title="Litora") as demo:
 
     test_state = gr.State()
     test_header = gr.Markdown()
-    question_groups, question_labels, question_radios, question_texts = [], [], [], []
+    question_groups, question_labels, question_texts = [], [], []
     for _ in range(MAX_QUESTIONS):
         with gr.Group(visible=False) as grp:
             lbl = gr.Markdown()
-            radio = gr.Radio(show_label=False, visible=False)
             text = gr.Textbox(show_label=False, visible=False, placeholder="Your answer")
         question_groups.append(grp)
         question_labels.append(lbl)
-        question_radios.append(radio)
         question_texts.append(text)
 
     submit_btn = gr.Button("Submit answers", variant="primary", visible=False)
@@ -1046,7 +1184,7 @@ with gr.Blocks(title="Litora") as demo:
         outputs=[book_structure_output, ocr_note_output, analyzed_state, chapter_texts_state, chapter_select],
     )
     slot_outputs = [
-        c for i in range(MAX_QUESTIONS) for c in (question_groups[i], question_labels[i], question_radios[i], question_texts[i])
+        c for i in range(MAX_QUESTIONS) for c in (question_groups[i], question_labels[i], question_texts[i])
     ]
     generate_btn.click(
         run_test_generation,
@@ -1062,7 +1200,7 @@ with gr.Blocks(title="Litora") as demo:
     )
     submit_btn.click(
         grade_test,
-        inputs=[test_state] + question_radios + question_texts,
+        inputs=[test_state] + question_texts,
         outputs=[results_output],
     )
 
@@ -1074,6 +1212,20 @@ if __name__ == "__main__":
             "[startup] No GOOGLE_CLOUD_VISION_API_KEY found in this container's environment -- OCR will "
             "fall back to local easyocr. If you added this secret in Space Settings, this container may "
             "not have picked it up yet (needs a rebuild/restart) -- check the secret name matches exactly.",
+            file=sys.stderr,
+        )
+    if CACHE_DATASET_REPO and _hf_token():
+        print(f"[startup] Analyzed-book cache enabled -- writing to dataset repo {CACHE_DATASET_REPO}.", file=sys.stderr)
+    elif CACHE_DATASET_REPO:
+        print(
+            f"[startup] LITORA_CACHE_DATASET_REPO={CACHE_DATASET_REPO!r} is set but no HF_TOKEN/HUGGINGFACE_TOKEN "
+            "secret was found -- cache reads will be attempted but writes will be skipped.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "[startup] LITORA_CACHE_DATASET_REPO is not set -- every upload will be analyzed fresh "
+            "(no book-analysis caching).",
             file=sys.stderr,
         )
     demo.queue().launch()

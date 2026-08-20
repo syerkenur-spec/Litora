@@ -51,6 +51,27 @@ pushed to a Hugging Face Space on its own.
    on later pushes.) Alternatively, upload `app.py`, `requirements.txt`, and
    `README.md` via the Space's web UI.
 
+## Caching analyzed books
+
+By default every upload re-runs OCR and Gemini analysis from scratch, even
+for a book that's already been analyzed. To skip that for a repeat upload of
+the exact same PDF (matched by SHA-256), set:
+
+1. `LITORA_CACHE_DATASET_REPO` -- a private Hugging Face Hub **dataset** repo
+   to cache into, e.g. `yourname/litora-book-cache` (it's created
+   automatically on first write if it doesn't exist).
+2. An `HF_TOKEN` (or `HUGGINGFACE_TOKEN`) Space secret with **write** access
+   to that repo -- generate one at huggingface.co/settings/tokens. Spaces
+   don't get a write-capable token by default, so this has to be added
+   explicitly even if the Space itself lives under the same account.
+
+Cached results are stored as one JSON file per book
+(`book-cache/<sha256>.json`) in that dataset repo, which persists
+independently of the Space's own container -- it survives restarts,
+rebuilds, and sleep/wake cycles without needing the paid Persistent Storage
+add-on. If either variable is missing, caching is silently skipped and every
+upload is analyzed fresh, exactly as before.
+
 ## Scanned PDFs and OCR speed
 
 Most coursebook PDFs are scans (page-images, no real text underneath) --

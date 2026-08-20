@@ -22,18 +22,20 @@ Process:
    book-analyzer.
 2. Generate vocab and grammar questions matching the book's actual
    difficulty — not generic level questions.
-3. Vary question types (fill-in-blank, multiple choice, short answer,
-   matching) unless told otherwise.
+3. Vary question types across the book's own three drill types — dialogue
+   completion, word-bank sentence completion (with correct
+   inflection/conjugation), and guided open-ended response — rather than
+   generic multiple choice, unless told otherwise.
 
 Calibration rules:
 - Match question difficulty to the book's assessed difficulty level — don't
   default to a generic intermediate/advanced template.
 - Work for any language, not just English — treat grammar structures and
   vocabulary as data from the book analysis, not hardcoded language rules.
-- Mix question types appropriately for what's being tested (e.g.
-  fill-in-the-blank for grammar, matching/multiple-choice for vocabulary) —
-  vary format across a test rather than repeating one question type
-  throughout.
+- Mix question types appropriately for what's being tested (dialogue
+  completion for grammar patterns, word-bank sentence completion for
+  vocabulary, guided response sparingly for open-ended production) — vary
+  format across a test rather than repeating one question type throughout.
 - If extra materials (video/website) were included in scope, draw some
   questions from that content too, clearly weighted toward the book as the
   primary source.

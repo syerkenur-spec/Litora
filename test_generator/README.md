@@ -36,7 +36,10 @@ Override the output paths with `-o` / `--answer-key`. `--label` sets the
 class/week label shown on the test; it defaults to the chapter id list if
 omitted.
 
-Questions mix `multiple_choice`, `fill_in_blank`, and `short_answer` types
+Questions mix `dialogue_completion` (fill in speaker 나's reply using the
+target grammar pattern), `word_bank_completion` (pick and correctly inflect
+a word from a ~5-word bank to complete a sentence), and `guided_response`
+(open-ended production, ungraded by exact match) — no multiple choice —
 covering both `vocabulary` and `grammar` topics, sized for weekly/daily use
 (roughly 8-12 questions) rather than a final exam.
 
